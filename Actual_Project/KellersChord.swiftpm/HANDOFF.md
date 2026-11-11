@@ -1759,3 +1759,136 @@ and the job summary will say in Run 3.
 * Whether `xcodebuild` can build a `.swiftpm` App package at all is still the
   central unknown (D.7). If `30-build-ios.log` reports dependency resolution
   again after the manifest repair, that is the thing to read first.
+
+---
+
+# APPENDIX F — CI Run 4: one real error, and the end of guessing
+
+Run 4 is the first run that produced ground-truth compiler output from
+`macos-15` + Xcode 16.4 across **all 25 source files**. `-Xfrontend
+-continue-building-after-errors` did its job: the log is complete rather than
+truncated at the first failure. The headline is that the project is one line away
+from compiling, and everything the earlier appendices called "unverified" is now
+answered.
+
+## F.1 What Run 4 proved
+
+* **`xcodebuild` builds a `.swiftpm` App package.** `30-build-ios.log` resolved
+  the package, resolved `AppleProductTypes`, and ran `SwiftCompile` over real
+  files. The D.7 question ("can this be built outside Swift Playgrounds at all?")
+  is answered: yes.
+* **The DSP harness is green: 40 checks, 0 failed** (`21-dsp-tests.log`), including
+  the room-noise gate, the Lombard band, the inflection thresholds and the
+  sibilance ZDR gate. `20-dsp-compile.log` is empty, i.e. zero warnings.
+* **The manifest ladder resolved on its first probe**: `.placeholder(icon: .star)`
+  / `.presetColor(.orange)` are both real members. Guessing is finished.
+* **The icon pipeline works end to end**: `qlmanage` → `sips` → alpha flatten →
+  1024×1024, 935 080 bytes, `hasAlpha: no`, and `50-icon-probe.log` reports that
+  `appIcon: .asset("AppIcon")` **resolves**.
+* **Exactly one root error, in one file.** Across 25 files, ~7 900 lines, iOS and
+  macOS SDKs, the only `error:` lines were four diagnostics from a single invented
+  type name. Both typecheck logs list the *same* four, in the same order.
+* No scheme/destination problem: `01-xcodebuild-list.log` shows the workspace and
+  the `KellersChord` scheme, which is what the build used.
+
+## F.2 The error table
+
+| File:Line | Exact compiler error | Root cause | Fix |
+|---|---|---|---|
+| `Sources/DesignSystem/ProsodyTextRenderer.swift:194:28` | `'Glyph' is not a member type of struct 'SwiftUICore.Text.Layout'` | `Text.Layout.Glyph` was invented at authoring time. iOS 18's `Text.Layout` has no such member; the type is the element of the element of the element of `Layout`. | `private typealias LayoutSlice = Text.Layout.Element.Element.Element` — derived from the collections the loops already iterate, so no SDK-internal name is spelled |
+| `Sources/DesignSystem/ProsodyTextRenderer.swift:308:28` | same | same (second helper) | same typealias |
+| `Sources/DesignSystem/ProsodyTextRenderer.swift:97:25` | `extra arguments at positions #1...#9 in call` | cascade: with an unresolvable parameter type, the call to the private helper fell back to `draw(layout:in:)` | gone once the type resolves |
+| `Sources/DesignSystem/ProsodyTextRenderer.swift:97:25` | `missing arguments for parameters 'layout', 'in' in call` | same cascade | gone |
+| `Sources/DesignSystem/ProsodyTextRenderer.swift:331` (not reported — body skipped) | *(latent)* `glyphContext.draw(glyph, at: origin)` | `GraphicsContext`'s point-based `draw` overloads cover `Text`, `Image`, `Symbol` — not a layout slice | `glyphContext.draw(glyph)`; the slice knows its own origin and the context transform does the moving |
+| `Sources/Engine/ProsodyDSPEngine.swift:737` | *(no error — behaviour, D.6)* | `guard pitch > 0 else { return smoothed.jitter }` plus `ema(x, x) == x` froze tremor forever after anxious speech | `return 0`, so the caller's own EMA (`α = 0.22`) decays it to ~5% in about a third of a second |
+
+`20-dsp-compile.log` had no errors at all. `30` / `31` / `40` contain no errors
+beyond those above, which confirms the `xcodebuild` failures were the compiler's,
+not a flag or destination problem. (`swift package describe` still fails with
+`no such module 'AppleProductTypes'` — that is expected and is not a gate; only
+`xcodebuild` can see that module.)
+
+## F.3 Why the fix does not guess a second name
+
+The original defect was not a typo, it was **an invented API**: a name written
+from memory because the authoring machine has no Apple SDK to check against. Fixing
+it with a second remembered name (`Text.Layout.RunSlice`) would repeat the mistake.
+
+So the type is *computed from the collections the code already walks*:
+
+```
+Text.Layout                 // given by the protocol
+          .Element          // → line
+          .Element          // → run
+          .Element          // → slice
+```
+
+That depends only on the nesting depth — which the three `for` loops prove
+compiles — and on no name at all.
+
+## F.4 The compile probe: the SDK decides, not memory
+
+`Text.Layout`'s per-slice **drawing** call cannot be derived that way: it is either
+`context.draw(slice)`, `slice.draw(in: &context)` or `context.draw(slice, at:)`,
+and only a compiler can say which. Since there is no Mac in this workflow's author
+loop, the compiler is *inside* the CI job instead:
+
+`.github/scripts/select-textlayout-idiom.sh` (workflow step 8) rewrites the two
+lines marked `CI-SELECT(typealias)` / `CI-SELECT(draw)` in
+`ProsodyTextRenderer.swift`, typechecks six files against the iOS 18 simulator SDK,
+and keeps the first candidate that compiles. It then prints the winner to
+`04-textlayout-probe.log`, the job summary, and a `diff` of what it changed. If a
+later candidate wins, the fix is two lines — but the **build already used the
+working version**, so a wrong first guess costs seconds rather than a CI run.
+
+Verified on Windows against a stand-in `xcrun` that accepts only the second, only
+the first, or no candidate at all: it patches, picks, reports, and restores the
+pre-probe file on total failure. CRLF working copies keep their line endings, so
+the diff is two lines rather than the whole file.
+
+## F.5 The icon is now real, not a placeholder
+
+`50-icon-probe.log` reported that `.asset("AppIcon")` resolves, so the manifest now
+ships the app's own icon and the catalog is committed:
+
+```
+Sources/Resources/AppIcon.xcassets/Contents.json
+Sources/Resources/AppIcon.xcassets/AppIcon.appiconset/Contents.json
+Sources/Resources/AppIcon.xcassets/AppIcon.appiconset/AppIcon.png   (1024×1024, no alpha)
+```
+
+The PNG is the artefact CI rendered from `AppIcon.svg` in run 4 — the flattest,
+most honest copy available without a Mac. CI keeps regenerating it from the SVG, so
+the SVG stays the source of truth. `.gitignore` deliberately keeps ignoring the
+*loose* `Sources/Resources/AppIcon.png` (a duplicate) but not the catalog.
+
+Also added: `.gitattributes` pinning `*.sh` / `*.yml` / `*.swift` / `*.md` to LF,
+because a CRLF shell script fails on the runner with `$'\r': command not found`.
+
+## F.6 The D.6 fix, with a regression test rather than a promise
+
+`updateJitter` no longer returns the held value when no `F0` was detected:
+
+```swift
+guard pitch > 0 else { return 0 }
+```
+
+Because the caller smooths the result with `ema(smoothed.jitter, jitter)`,
+returning `0` decays the tremor (≈5% after 12 frames) instead of freezing it — the
+audible truth: the tremor stops when the voice stops, it does not vanish mid-air
+either. Three harness checks now pin it (`D.6:` prefix, taking the harness to 43
+checks): tremor is established, silence decays it to ≤0.02, and the silent frame
+no longer classifies as `.anxiousTremor`. Under the old code the middle check
+fails, so this is a real regression test, not a comment.
+
+## F.7 Still unverified after this pass
+
+* Which `Text.Layout` drawing idiom Xcode 16.4 actually accepts. Candidate 1 is
+  committed (`glyphContext.draw(glyph)`); the probe resolves it either way and the
+  log will say. This is the only remaining unknown, and it is now self-healing.
+* `xcodebuild test` for `KellersChordTests`. Run 4's three scheme fallbacks all
+  failed *because the build failed*, so the XCTest target has still never run. If
+  the app target links, `40-xcodebuild-test.log` should finally show 36 assertions.
+* Simulator screenshots. `preview/NOTES.txt` shows the step had already chosen the
+  iPad Pro 13-inch (M5) and the `.app` path, but no `.app` existed to install. No
+  human has seen KellersChord yet.

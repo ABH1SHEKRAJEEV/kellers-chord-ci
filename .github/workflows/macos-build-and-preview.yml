@@ -192,11 +192,21 @@ jobs:
             echo "no .swiftinterface found; falling back to the candidate ladder" | tee -a "$LOG"
           fi
 
-          CURRENT_ICON="$(grep -o 'placeholder(icon: \.[a-zA-Z]*' "$MANIFEST" | sed 's/.*\.//')"
-          CURRENT_ACCENT="$(grep -o 'presetColor(\.[a-zA-Z]*' "$MANIFEST" | sed 's/.*\.//')"
+          CURRENT_ICON="$(grep -o 'placeholder(icon: \.[a-zA-Z]*' "$MANIFEST" | sed 's/.*\.//')"          CURRENT_ACCENT="$(grep -o 'presetColor(\.[a-zA-Z]*' "$MANIFEST" | sed 's/.*\.//')"
           CURRENT_ICON="${CURRENT_ICON:-star}"
           CURRENT_ACCENT="${CURRENT_ACCENT:-orange}"
           echo "current: icon=$CURRENT_ICON accent=$CURRENT_ACCENT" | tee -a "$LOG"
+
+          # Run 4's ladder already found the pair, and the manifest now ships
+          # `.asset("AppIcon")`, so there is usually nothing left to repair. One
+          # `xcodebuild -list` is a few seconds; the full ladder is minutes.
+          if ( cd "$PKG_DIR" && xcodebuild -list -json > /dev/null 2>&1 ); then
+            echo "manifest already resolves; no repair needed" | tee -a "$LOG"
+            echo "appIcon:  $(grep -o 'appIcon: .*' "$MANIFEST" | head -1)" | tee -a "$LOG"
+            echo "accent:   $(grep -o 'accentColor: .*' "$MANIFEST" | head -1)" | tee -a "$LOG"
+            exit 0
+          fi
+          echo "manifest does not resolve yet; walking the candidate ladder" | tee -a "$LOG"
 
           # Most likely first. `awk '!seen[$0]++'` dedupes, because the current
           # value is normally also the first candidate and a duplicate would burn
@@ -246,6 +256,20 @@ jobs:
             echo "Working appIcon:  $(grep -o 'appIcon: .*' "$MANIFEST" | head -1)"
             echo "Working accent:   $(grep -o 'accentColor: .*' "$MANIFEST" | head -1)"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # `Text.Layout`'s element type and its drawing call are iOS 18 API with no
+      # documentation available on the (Windows) authoring machine, and run 4's
+      # only compile error was exactly that guess. This makes the SDK decide: it
+      # rewrites the two CI-SELECT-marked lines of ProsodyTextRenderer.swift and
+      # typechecks until one pair compiles, then reports the winner. A wrong first
+      # guess therefore costs seconds here instead of a whole run.
+      - name: Select the Text.Layout drawing idiom (compile probe)
+        id: textlayout
+        continue-on-error: true
+        shell: bash
+        run: |
+          bash .github/scripts/select-textlayout-idiom.sh \
+            "$PKG_DIR" "$ART" "$ART/ci-shim/BundleModuleShim.swift"
 
       # ════════════════════════════════════════════════════════════════════
       # HARD GATE 1 — iOS typecheck against the real iOS SDK
@@ -657,6 +681,7 @@ jobs:
             echo "| macOS typecheck (hard) | ${{ steps.typecheck_macos.outcome }} |"
             echo "| DSP harness (hard) | ${{ steps.dsp.outcome }} |"
             echo "| manifest repair | ${{ steps.manifest_repair.outcome }} |"
+            echo "| Text.Layout idiom probe | ${{ steps.textlayout.outcome }} |"
             echo "| xcodebuild build iOS | ${{ steps.build_ios.outcome }} |"
             echo "| xcodebuild build macOS | ${{ steps.build_macos.outcome }} |"
             echo "| xcodebuild test | ${{ steps.unit_tests.outcome }} |"

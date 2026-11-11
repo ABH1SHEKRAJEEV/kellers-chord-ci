@@ -734,7 +734,16 @@ final class ProsodyAnalyzer: @unchecked Sendable {
     /// Standard deviation of the last 12 voiced `F0` values, divided by their mean.
     /// Values above 0.45 read as anxious hesitation.
     private func updateJitter(with pitch: Float, rms: Float) -> Float {
-        guard pitch > 0 else { return smoothed.jitter }
+        // No detectable `F0` is silence, so tremor must *decay*, not freeze.
+        //
+        // HANDOFF D.6: this used to `return smoothed.jitter`, and because the
+        // caller smooths with `ema(smoothed, jitter)`, `ema(x, x) == x` froze the
+        // value forever — so a silent frame right after anxious speech kept
+        // classifying as `.anxiousTremor` at `rmsAmplitude == 0`. Returning 0 makes
+        // the caller's own EMA (`α = 0.22`, line ~549) walk it down to ~5% in about
+        // a third of a second, which is the audible truth: the tremor stops when
+        // the voice stops, it does not vanish mid-air either.
+        guard pitch > 0 else { return 0 }
 
         // Upgrade 6: room-noise gate — a raw RMS at or below the calibrated noise
         // floor is silence/air-conditioner rumble, not vocal tremor.

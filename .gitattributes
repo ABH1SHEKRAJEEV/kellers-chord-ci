@@ -1,0 +1,10 @@
+# The CI runner checks out on Linux/macOS, where a CRLF shell script fails with
+# `$'\r': command not found`. Pin the text files that must be byte-exact in the
+# runner's working tree. (Windows keeps its own CRLF working copy; git converts
+# on commit, and these rules force LF in the repository itself.)
+*.sh   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.swift text eol=lf
+*.md   text eol=lf
+*.json text eol=lf

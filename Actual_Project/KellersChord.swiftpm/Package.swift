@@ -16,12 +16,14 @@ let package = Package(
             teamIdentifier: "",
             displayVersion: "1.0",
             bundleVersion: "1",
-            // Xcode 16.4's `AppleProductTypes` does not expose `.waveform` or
-            // `.amber` (CI run 2 proved it). `.star` and `.orange` are the
-            // template-adjacent values; the CI "repair" step walks a candidate
-            // ladder and prints the exact combination that resolves, so this line
-            // is self-correcting rather than a guess that has to be re-guessed.
-            appIcon: .placeholder(icon: .star),
+            // CI run 4 answered both icon questions with the same log:
+            //   * the repair ladder resolved `.placeholder(icon: .star)` /
+            //     `.presetColor(.orange)` — those two names are real;
+            //   * `50-icon-probe.log` then reported that `.asset("AppIcon")`
+            //     resolves too, with the catalog committed at
+            //     `Sources/Resources/AppIcon.xcassets`.
+            // So the manifest ships the real icon rather than a placeholder.
+            appIcon: .asset("AppIcon"),
             accentColor: .presetColor(.orange),
             supportedDeviceFamilies: [.pad, .phone],
             supportedInterfaceOrientations: [

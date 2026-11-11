@@ -29,6 +29,22 @@ struct ProsodyTextRenderer: TextRenderer, Animatable {
     /// Honours the Accessibility Reduce Motion setting.
     var reduceMotion: Bool
 
+    /// The element type produced by walking `Text.Layout` three levels deep —
+    /// `Layout` → line → run → slice.
+    ///
+    /// CI run 4 proved the SDK exposes **no** `Text.Layout.Glyph`: that name was
+    /// invented at authoring time. Rather than guess a second SDK-internal name,
+    /// the type is *derived* from the collection — `layout`'s element, its element,
+    /// its element — which is exactly the nesting the three loops below iterate.
+    /// It therefore depends only on the depth, not on any name.
+    ///
+    /// The marker below is read by the CI probe `select-textlayout-idiom.sh`: if
+    /// this derivation is also rejected, the probe rewrites the marked line and
+    /// reports the winning spelling. (The marker token is spelled only on the
+    /// marker line itself, so `grep` finds exactly two of them in this file.)
+    // CI-SELECT(typealias)
+    private typealias LayoutSlice = Text.Layout.Element.Element.Element
+
     // MARK: - Animatable
 
     /// Interpolates the four continuous metrics so SwiftUI can tween frames.
@@ -141,8 +157,8 @@ struct ProsodyTextRenderer: TextRenderer, Animatable {
     /// invisible in every caption system, so this is the one cue that tells a deaf
     /// speaker their articulation was sharp and audible.
     ///
-    /// **Placement policy (deliberate):** `Text.Layout.Glyph` is only guaranteed
-    /// to expose `typographicBounds` across the iOS 18 SwiftUI surface, so this
+    /// **Placement policy (deliberate):** a layout slice is only guaranteed to
+    /// expose `typographicBounds` across the iOS 18 SwiftUI surface, so this
     /// layer never asks which *letter* it is over. Instead it draws the spark above
     /// **every glyph of the line** while the `4-8 kHz` sibilance band is active,
     /// which is the honest reading of the acoustic data: the air-burst is a
@@ -191,7 +207,7 @@ struct ProsodyTextRenderer: TextRenderer, Animatable {
 
     /// Applies the three layered transforms to one glyph.
     private func draw(
-        glyph: Text.Layout.Glyph,
+        glyph: LayoutSlice,
         index: Int,
         indexCount: Int,
         energy: Float,
@@ -305,7 +321,7 @@ struct ProsodyTextRenderer: TextRenderer, Animatable {
     /// a shear, and horizontal micro-jitter, then applies the vertical pitch wave
     /// as a translation.
     private func drawTransformed(
-        glyph: Text.Layout.Glyph,
+        glyph: LayoutSlice,
         center: CGPoint,
         waveOffset: Double,
         verticalStretch: Double,
@@ -328,8 +344,13 @@ struct ProsodyTextRenderer: TextRenderer, Animatable {
         var glyphContext = ctx
         glyphContext.transform = transform
 
-        // Draw at the glyph's own layout origin; the transform handles motion.
-        let origin = glyph.typographicBounds.origin
-        glyphContext.draw(glyph, at: origin)
+        // Draw the slice through the transformed context. The slice already knows
+        // its own layout origin, so no point is passed — the transform above
+        // (anchored on the glyph centre, then translated back) does the moving.
+        //
+        // The marker below lets the CI probe `select-textlayout-idiom.sh` rewrite
+        // this line when the spelling is not the one Xcode 16.4 accepts.
+        // CI-SELECT(draw)
+        glyphContext.draw(glyph)
     }
 }

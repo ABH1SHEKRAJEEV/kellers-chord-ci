@@ -217,6 +217,31 @@ do {
 
     let afterGate = feed(gated, hz: 200, amplitude: 0.0025, count: convergenceBuffers)
     expectIn("Jitter: room-noise gate zeroes tremor (not held)", afterGate.pitchJitter, 0.0, 0.02)
+
+    // HANDOFF D.6 (fixed in run 5). Pure silence is a *different* path from the RMS
+    // gate above: with no detectable `F0` the analyzer used to `return
+    // smoothed.jitter`, and because the caller then applies `ema(smoothed, jitter)`,
+    // `ema(x, x) == x` froze the value forever — a silent frame right after anxious
+    // speech kept classifying as `.anxiousTremor` at `rmsAmplitude == 0`.
+    let hushed = ProsodyAnalyzer()
+    var hushedIndex = 0
+    for step in 0..<14 {
+        let hz: Float = step.isMultiple(of: 2) ? 100 : 340
+        if let buffer = toneBuffer(hz: hz, amplitude: 0.5, startIndex: hushedIndex) {
+            _ = hushed.process(buffer)
+        }
+        hushedIndex += framesPerBuffer
+    }
+    let beforeSilence = feed(hushed, hz: 200, amplitude: 0.5, count: 1, startingIndex: hushedIndex)
+    expect("D.6: tremor established before the silence",
+           beforeSilence.pitchJitter > 0.35,
+           "jitter = \(beforeSilence.pitchJitter)")
+
+    let afterSilence = feedSilence(hushed, count: convergenceBuffers)
+    expectIn("D.6: silence decays tremor (not held)", afterSilence.pitchJitter, 0.0, 0.02)
+    expect("D.6: a silent frame is no longer anxious tremor",
+           afterSilence.classifiedEmotion != .anxiousTremor,
+           "profile = \(afterSilence.classifiedEmotion)")
 }
 
 // MARK: - 5. 4-8 kHz sibilance band detector
