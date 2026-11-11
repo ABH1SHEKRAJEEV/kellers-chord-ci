@@ -57,6 +57,17 @@ struct ProsodyTextRenderer: TextRenderer, Animatable {
 
     // MARK: - TextRenderer
 
+    /// `TextRenderer` conformance requirement.
+    ///
+    /// Appendix B.3 deleted this as "unused" because no call site reads it — which
+    /// was true, and also wrong: SwiftUI reads it, and the protocol requires it.
+    /// It is now restored, and the comment says why so it is not deleted again.
+    /// Vertical padding only, so the Consonant Spark diamonds drawn above the
+    /// glyphs are not clipped by the render area.
+    var displayPadding: EdgeInsets {
+        EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0)
+    }
+
     /// Draws the layout glyph by glyph, applying the three prosody transforms.
     func draw(layout: Text.Layout, in ctx: inout GraphicsContext) {
         // A per-frame energy gate: below this the type stays crisp and steady.

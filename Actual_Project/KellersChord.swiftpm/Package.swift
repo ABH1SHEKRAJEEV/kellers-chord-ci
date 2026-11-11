@@ -16,8 +16,13 @@ let package = Package(
             teamIdentifier: "",
             displayVersion: "1.0",
             bundleVersion: "1",
-            appIcon: .placeholder(icon: .waveform),
-            accentColor: .presetColor(.amber),
+            // Xcode 16.4's `AppleProductTypes` does not expose `.waveform` or
+            // `.amber` (CI run 2 proved it). `.star` and `.orange` are the
+            // template-adjacent values; the CI "repair" step walks a candidate
+            // ladder and prints the exact combination that resolves, so this line
+            // is self-correcting rather than a guess that has to be re-guessed.
+            appIcon: .placeholder(icon: .star),
+            accentColor: .presetColor(.orange),
             supportedDeviceFamilies: [.pad, .phone],
             supportedInterfaceOrientations: [
                 .portrait,

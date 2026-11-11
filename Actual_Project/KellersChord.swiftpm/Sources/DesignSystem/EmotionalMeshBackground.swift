@@ -49,7 +49,10 @@ struct EmotionalMeshBackground: View {
         let palette = ThemeTokens.Palette.colors(for: frame.classifiedEmotion)
         let base = ThemeTokens.Palette.neutral
 
-        let energy = min(max(frame.rmsAmplitude, 0), 1)
+        // `ProsodyFrame` is deliberately `Float` (it is built on the CoreAudio
+        // render thread), while SwiftUI color maths is `Double`, so the energy is
+        // widened once here instead of at every use.
+        let energy = Double(min(max(frame.rmsAmplitude, 0), 1))
         // Unvoiced frames (silence) sit almost fully on the obsidian baseline.
         let mix = frame.isVoiced ? (0.20 + 0.80 * energy) * intensityScale : 0.04 * intensityScale
 
@@ -82,14 +85,14 @@ struct EmotionalMeshBackground: View {
             // replaces the deep-black canvas.
             ThemeTokens.obsidian
 
+            // The plain 4-argument initializer is the one that exists on every
+            // iOS 18 / macOS 15 SDK. `background:` is redundant anyway: this mesh
+            // is drawn over the obsidian floor in the ZStack below.
             MeshGradient(
                 width: 3,
                 height: 3,
                 points: meshPoints,
-                colors: meshColors(stops: stops),
-                background: ThemeTokens.obsidian,
-                smoothsColors: true,
-                colorSpace: .perceptual
+                colors: meshColors(stops: stops)
             )
 
             // Vignette keeps the eye pulled to the centre stage.

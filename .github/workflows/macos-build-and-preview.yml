@@ -137,6 +137,105 @@ jobs:
             '}' > "$ART/ci-shim/BundleModuleShim.swift"
           cat "$ART/ci-shim/BundleModuleShim.swift"
 
+      # `-typecheck` runs all files as one translation unit, so the FIRST error in
+      # a function body aborts the whole check and hides everything downstream —
+      # which is exactly what Run 2 of this project hit (one error per run).
+      # `-continue-building-after-errors` is a frontend flag; it is probed rather
+      # than assumed, so an SDK that rejects it simply gets the old behaviour.
+      - name: Probe compiler flags
+        id: flags
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "$ART/ci-probe"
+          printf 'import Foundation\nlet probe = 1\n' > "$ART/ci-probe/probe.swift"
+          if xcrun --sdk macosx swiftc \
+               -Xfrontend -continue-building-after-errors \
+               -typecheck "$ART/ci-probe/probe.swift" > /dev/null 2>&1; then
+            echo "SWIFT_CONTINUE_FLAG=-Xfrontend -continue-building-after-errors" >> "$GITHUB_ENV"
+            echo "continue-after-errors: available"
+          else
+            echo "SWIFT_CONTINUE_FLAG=" >> "$GITHUB_ENV"
+            echo "continue-after-errors: NOT available, typecheck stops at the first error"
+          fi
+
+      # Xcode 16.4's AppleProductTypes does not accept `.waveform` or `.amber`
+      # (proved by CI run 2). Both enums are small and undocumented, so instead of
+      # guessing again this step reads the real `.swiftinterface` out of the SDK
+      # and then walks a candidate ladder until `xcodebuild -list` resolves.
+      # Whatever wins is printed as the exact edit to commit; nothing is committed
+      # by the runner.
+      - name: Discover AppleProductTypes enums and repair the manifest
+        id: manifest_repair
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          MANIFEST="$PKG_DIR/Package.swift"
+          LOG="$ART/03-manifest-repair.log"
+          cp "$MANIFEST" "$ART/Package.swift.original"
+
+          echo "=== AppleProductTypes in the SDK ===" | tee "$LOG"
+          find "${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}" \
+            -name 'AppleProductTypes*' 2>/dev/null | head -20 | tee -a "$LOG"
+
+          IFACE="$(find "${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}" \
+            -name 'AppleProductTypes.swiftinterface' 2>/dev/null | head -1)"
+          if [ -z "$IFACE" ]; then
+            IFACE="$(find /Applications -name 'AppleProductTypes.swiftinterface' 2>/dev/null | head -1)"
+          fi
+          if [ -n "$IFACE" ]; then
+            echo "=== interface: $IFACE ===" | tee -a "$LOG"
+            grep -n -A 40 'enum PlaceholderIcon' "$IFACE" | head -60 | tee -a "$LOG"
+            grep -n -A 40 'enum PresetColor' "$IFACE" | head -60 | tee -a "$LOG"
+          else
+            echo "no .swiftinterface found; falling back to the candidate ladder" | tee -a "$LOG"
+          fi
+
+          CURRENT_ICON="$(grep -o 'placeholder(icon: \.[a-zA-Z]*' "$MANIFEST" | sed 's/.*\.//')"
+          CURRENT_ACCENT="$(grep -o 'presetColor(\.[a-zA-Z]*' "$MANIFEST" | sed 's/.*\.//')"
+          CURRENT_ICON="${CURRENT_ICON:-star}"
+          CURRENT_ACCENT="${CURRENT_ACCENT:-orange}"
+          echo "current: icon=$CURRENT_ICON accent=$CURRENT_ACCENT" | tee -a "$LOG"
+
+          # Most likely first; the loops exit on the first resolving pair.
+          ICONS="$CURRENT_ICON star square circle heart bolt diamond hexagon triangle"
+          ACCENTS="$CURRENT_ACCENT orange blue red green purple teal pink indigo yellow gray mint cyan"
+
+          WINNER=""
+          for icon in $ICONS; do
+            for accent in $ACCENTS; do
+              sed -i '' \
+                -e "s/appIcon: \.placeholder(icon: \.[a-zA-Z]*)/appIcon: .placeholder(icon: .$icon)/" \
+                -e "s/accentColor: \.presetColor(\.[a-zA-Z]*)/accentColor: .presetColor(.$accent)/" \
+                "$MANIFEST"
+              if ( cd "$PKG_DIR" && xcodebuild -list -json > /dev/null 2>&1 ); then
+                WINNER="icon=.placeholder(icon: .$icon)  accentColor=.presetColor(.$accent)"
+                echo "RESOLVED: $WINNER" | tee -a "$LOG"
+                break
+              fi
+              echo "  rejected icon=$icon accent=$accent" | tee -a "$LOG"
+            done
+            [ -n "$WINNER" ] && break
+          done
+
+          if [ -z "$WINNER" ]; then
+            echo "::error::No (icon, accent) pair resolves. The manifest is invalid." | tee -a "$LOG"
+            cp "$ART/Package.swift.original" "$MANIFEST"
+            exit 1
+          fi
+
+          {
+            echo ""
+            echo "## Manifest repair"
+            echo '```'
+            echo "COMMIT THIS to Package.swift:"
+            echo "            appIcon: .$WINNER"
+            echo '```'
+            echo "Working value: $(grep -n 'appIcon' "$MANIFEST")"
+            echo "Accent value:  $(grep -n 'accentColor' "$MANIFEST")"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # ════════════════════════════════════════════════════════════════════
       # HARD GATE 1 — iOS typecheck against the real iOS SDK
       # ════════════════════════════════════════════════════════════════════
@@ -156,6 +255,7 @@ jobs:
             -typecheck \
             -parse-as-library \
             -swift-version 5 \
+            ${SWIFT_CONTINUE_FLAG:-} \
             -module-name AppModule \
             -sdk "$SDK" \
             -target arm64-apple-ios18.0-simulator \
@@ -184,6 +284,7 @@ jobs:
             -typecheck \
             -parse-as-library \
             -swift-version 5 \
+            ${SWIFT_CONTINUE_FLAG:-} \
             -module-name AppModule \
             -sdk "$SDK" \
             -target arm64-apple-macosx15.0 \
@@ -208,6 +309,7 @@ jobs:
           set +e
           xcrun --sdk macosx swiftc \
             -swift-version 5 \
+            ${SWIFT_CONTINUE_FLAG:-} \
             -O \
             -module-name DSPHarness \
             -sdk "$SDK" \
@@ -404,6 +506,31 @@ jobs:
           echo "AppIcon.png = ${W}x${H}"
           [ "$W" = "1024" ] && [ "$H" = "1024" ] || { echo "::error::Icon is not 1024x1024"; exit 1; }
 
+          # A loose PNG in Resources is NOT an asset. `.asset("AppIcon")` needs a
+          # real catalog entry, so build the modern single-size appiconset around
+          # the rendered file. `.process("Resources")` compiles it into the bundle.
+          CATALOG="$PKG_DIR/Sources/Resources/AppIcon.xcassets"
+          SET="$CATALOG/AppIcon.appiconset"
+          mkdir -p "$SET"
+          printf '%s\n' \
+            '{' \
+            '  "info" : { "author" : "xcode", "version" : 1 }' \
+            '}' > "$CATALOG/Contents.json"
+          printf '%s\n' \
+            '{' \
+            '  "images" : [' \
+            '    {' \
+            '      "filename" : "AppIcon.png",' \
+            '      "idiom" : "universal",' \
+            '      "platform" : "ios",' \
+            '      "size" : "1024x1024"' \
+            '    }' \
+            '  ],' \
+            '  "info" : { "author" : "xcode", "version" : 1 }' \
+            '}' > "$SET/Contents.json"
+          cp "$OUT" "$SET/AppIcon.png"
+          find "$CATALOG" -type f | tee "$ART/icon/catalog-files.log"
+
       - name: Probe appIcon .asset("AppIcon") in Package.swift
         id: icon_probe
         continue-on-error: true
@@ -415,27 +542,30 @@ jobs:
           LOG="$ART/50-icon-probe.log"
           cp "$MANIFEST" "$BACKUP"
 
-          if ! grep -q 'appIcon: .placeholder' "$MANIFEST"; then
+          if ! grep -q 'appIcon: \.placeholder' "$MANIFEST"; then
             echo "Manifest is not on .placeholder; nothing to probe." | tee "$LOG"
             exit 0
           fi
 
-          sed -i '' 's/appIcon: \.placeholder(icon: \.waveform)/appIcon: .asset("AppIcon")/' "$MANIFEST"
+          # `.asset(\"AppIcon\")` replaces whatever placeholder icon won the repair
+          # step, so the pattern is generic rather than pinned to one icon name.
+          sed -i '' 's/appIcon: \.placeholder(icon: \.[a-zA-Z]*)/appIcon: .asset("AppIcon")/' "$MANIFEST"
           grep -n 'appIcon' "$MANIFEST" | tee "$LOG"
 
+          # Only `xcodebuild` knows about AppleProductTypes; `swift package
+          # describe` uses the plain ManifestAPI and can never resolve this
+          # manifest (CI run 2 logged exactly that). So it is the only oracle.
           set +e
           ( cd "$PKG_DIR" && xcodebuild -list -json ) >> "$LOG" 2>&1
           RC_LIST=$?
-          ( cd "$PKG_DIR" && swift package describe ) >> "$LOG" 2>&1
-          RC_DESCRIBE=$?
           set -e
 
-          if [ "$RC_LIST" -eq 0 ] && [ "$RC_DESCRIBE" -eq 0 ]; then
-            echo "VERDICT: appIcon .asset(\"AppIcon\") resolves cleanly." | tee -a "$LOG"
-            echo "The manifest is left on .asset for the rest of this run only."
+          if [ "$RC_LIST" -eq 0 ]; then
+            echo "VERDICT: appIcon .asset(\"AppIcon\") resolves; catalog at Sources/Resources/AppIcon.xcassets." | tee -a "$LOG"
+            echo "COMMIT: appIcon: .asset(\"AppIcon\") + Sources/Resources/AppIcon.xcassets/" | tee -a "$LOG"
           else
-            echo "VERDICT: .asset(\"AppIcon\") did NOT resolve (list=$RC_LIST describe=$RC_DESCRIBE)." | tee -a "$LOG"
-            echo "Restoring .placeholder so the package keeps building." | tee -a "$LOG"
+            echo "VERDICT: .asset(\"AppIcon\") did NOT resolve (list=$RC_LIST)." | tee -a "$LOG"
+            echo "Restoring the placeholder so the package keeps building." | tee -a "$LOG"
             cp "$BACKUP" "$MANIFEST"
             tail -40 "$LOG"
             exit 1
@@ -515,6 +645,7 @@ jobs:
             echo "| iOS typecheck (hard) | ${{ steps.typecheck_ios.outcome }} |"
             echo "| macOS typecheck (hard) | ${{ steps.typecheck_macos.outcome }} |"
             echo "| DSP harness (hard) | ${{ steps.dsp.outcome }} |"
+            echo "| manifest repair | ${{ steps.manifest_repair.outcome }} |"
             echo "| xcodebuild build iOS | ${{ steps.build_ios.outcome }} |"
             echo "| xcodebuild build macOS | ${{ steps.build_macos.outcome }} |"
             echo "| xcodebuild test | ${{ steps.unit_tests.outcome }} |"
@@ -527,7 +658,8 @@ jobs:
           for outcome in \
             "${{ steps.typecheck_ios.outcome }}" \
             "${{ steps.typecheck_macos.outcome }}" \
-            "${{ steps.dsp.outcome }}"; do
+            "${{ steps.dsp.outcome }}" \
+            "${{ steps.manifest_repair.outcome }}"; do
             [ "$outcome" = "failure" ] && FAILED=1
           done
           [ "$FAILED" -eq 1 ] && exit 1

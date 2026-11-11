@@ -9,32 +9,32 @@ import Foundation
 ///    replays `dominantFrame` as a slow-motion tactile signature.
 /// 2. **The 3-Take Live Stage Challenge deck** — three takes are compared
 ///    side-by-side through their `[WordProsodySnapshot]` arrays.
-public struct WordProsodySnapshot: Identifiable, Sendable, Equatable {
+struct WordProsodySnapshot: Identifiable, Sendable, Equatable {
     /// Stable identity for `Identifiable` list rendering.
-    public let id: UUID
+    let id: UUID
     /// The recognized word text.
-    public let word: String
+    let word: String
     /// Seconds from the start of the take at which this word began.
-    public let timestampOffset: TimeInterval
+    let timestampOffset: TimeInterval
     /// Spoken duration of the word in seconds.
-    public let duration: TimeInterval
+    let duration: TimeInterval
     /// The ordered `ProsodyFrame` slice that produced this word.
-    public let frames: [ProsodyFrame]
+    let frames: [ProsodyFrame]
     /// The single most representative frame (peak RMS, else the mean).
-    public let dominantFrame: ProsodyFrame
+    let dominantFrame: ProsodyFrame
     /// `true` when the word carried a strong `4-8 kHz` consonant air-burst.
-    public let hasConsonantSpark: Bool
+    let hasConsonantSpark: Bool
     /// The classified trailing intonation of the word.
-    public let terminalInflection: TerminalInflectionType
+    let terminalInflection: TerminalInflectionType
 
     /// Rising question tail vs. grounded statement drop vs. steady cadence.
-    public enum TerminalInflectionType: String, Sendable, Equatable {
+    enum TerminalInflectionType: String, Sendable, Equatable {
         case steady = "Steady"
         case risingQuestion = "Rising Question"
         case groundedDrop = "Statement Drop"
     }
 
-    public init(
+    init(
         id: UUID = UUID(),
         word: String,
         timestampOffset: TimeInterval,
@@ -57,21 +57,21 @@ public struct WordProsodySnapshot: Identifiable, Sendable, Equatable {
 
 /// One of the three live emotional takes in the Act III "3-Take Live Stage
 /// Challenge" deck. Defined by `Everything2.md` Section 4.1.
-public struct LiveChallengeTake: Identifiable, Sendable, Equatable {
+struct LiveChallengeTake: Identifiable, Sendable, Equatable {
     /// Stable identity for `Identifiable` deck rendering.
-    public let id: UUID
+    let id: UUID
     /// 1-based take index shown on the comparison card.
-    public let takeNumber: Int
+    let takeNumber: Int
     /// The emotional target the speaker was asked to hit (e.g. "Warm Relief").
-    public let targetLabel: String
+    let targetLabel: String
     /// The transcribed text of the take, if speech recognition produced one.
-    public let transcript: String
+    let transcript: String
     /// The per-word prosody slices recorded during the take.
-    public let snapshots: [WordProsodySnapshot]
+    let snapshots: [WordProsodySnapshot]
     /// The averaged frame across the whole take, for the comparison metrics.
-    public let averageFrame: ProsodyFrame
+    let averageFrame: ProsodyFrame
 
-    public init(
+    init(
         id: UUID = UUID(),
         takeNumber: Int,
         targetLabel: String,
@@ -89,7 +89,7 @@ public struct LiveChallengeTake: Identifiable, Sendable, Equatable {
 
     /// Mean of `frames` across every snapshot, falling back to `.silent`.
     /// Used to populate `averageFrame` when a take is finalized.
-    public static func averagedFrame(of snapshots: [WordProsodySnapshot]) -> ProsodyFrame {
+    static func averagedFrame(of snapshots: [WordProsodySnapshot]) -> ProsodyFrame {
         let all = snapshots.flatMap { $0.frames }
         guard !all.isEmpty else { return .silent }
         let count = Float(all.count)

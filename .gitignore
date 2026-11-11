@@ -1,0 +1,12 @@
+# Downloaded CI artifacts (logs, screenshots, rendered icon) — never commit these.
+ci_logs/
+ci-artifacts/
+ci-derived/
+
+# macOS / Xcode droppings
+.DS_Store
+*.xcuserstate
+build/
+
+# NOTE: do not ignore "*.swiftpm" or ".swiftpm" here — the app package itself is
+# Actual_Project/KellersChord.swiftpm and would disappear from the repo.

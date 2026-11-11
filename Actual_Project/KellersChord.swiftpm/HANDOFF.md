@@ -1605,3 +1605,151 @@ recorded here rather than patched. The harness asserts the *documented* contract
 * Linking an `executableTarget` into an XCTest bundle is the second open
   question; the harness exists so the DSP math is verified either way.
 * No human has seen the screenshots. The CI artifacts are the first real look.
+
+---
+
+# APPENDIX E — CI Run 2: what actually broke, and what was fixed
+
+Run 2 on `macos-15` was the first real compiler feedback of the project. This
+appendix is the record of that feedback: what passed, every error the compilers
+printed, the root cause of each, and what changed. Run 2 is **not** green — it
+stopped at three hard gates — so everything below is a starting point for Run 3,
+not a claim of success.
+
+## E.1 What Run 2 proved works
+
+* The workflow itself runs end to end: `macos-15`, Xcode 16.4 (`16F6`), iOS 18.5
+  / 18.6 / 26.x simulators, artifact upload, step summary.
+* `/Applications/Xcode_16.4.app` selection is correct — there was no
+  "Xcode_16.4.app not found" fallback message.
+* **The icon pipeline passed.** `qlmanage -s 1024` rendered `AppIcon.svg`, `sips`
+  confirmed 1024×1024, the alpha channel was flattened, and the byte floor test
+  passed. This was the one green stage.
+* The iOS typecheck really does typecheck SwiftUI **view** files against the real
+  iOS 18 simulator SDK (`EmotionalMeshBackground.swift` failed *inside a view
+  body*, which means `import SwiftUI` resolved and the whole file set was seen).
+* `xcrun --sdk iphonesimulator swiftc -target arm64-apple-ios18.0-simulator` is
+  accepted with no target-triple complaint. There was **no** `-target` mismatch
+  and no SDK-path bug — the workflow's compile flags are sound.
+
+## E.2 The four real compiler errors
+
+### E.2.1 `Float` where `Double` was required (iOS *and* macOS typecheck)
+
+```
+Sources/DesignSystem/EmotionalMeshBackground.swift:54:51:
+  error: cannot convert value of type 'Float' to expected argument type 'Double'
+```
+
+`ProsodyFrame.rmsAmplitude` is `Float` — correct, because the frame is built on
+the analysis path — but the mesh maths around it uses `Double` literals
+(`0.20 + 0.80 * energy`) and `intensityScale: Double`. So `energy` inherited
+`Float` and the ternary mixed the two types.
+
+Fix: widen once, at the boundary, with a comment saying why the model stays
+`Float`:
+
+```swift
+let energy = Double(min(max(frame.rmsAmplitude, 0), 1))
+```
+
+`ChladniWaveCanvas` and `TabletopDuetOverlay` already did this correctly, which
+is why only the mesh failed.
+
+### E.2.2 `public` on a type that exposes an internal type (both typechecks)
+
+```
+Sources/Models/WordProsodySnapshot.swift:22:16:
+  error: property cannot be declared public because its type uses an internal type
+Sources/Models/WordProsodySnapshot.swift:24:16:  (same, for dominantFrame)
+```
+
+`ProsodyFrame` is internal; `WordProsodySnapshot` declared `public let frames:
+[ProsodyFrame]` and `public let dominantFrame: ProsodyFrame`. `LiveChallengeTake`
+had the same shape. Nothing in the app crosses a module boundary (the package has
+one internal module, `AppModule`; only the XCTest target touches it, through
+`@testable import`), so `public` bought nothing and broke the build.
+
+Fix: dropped every `public` from `Sources/Models/WordProsodySnapshot.swift`.
+Only one `public` token now remains anywhere in `Sources/`, and it is inside a
+`// MARK:` comment.
+
+### E.2.3 and E.2.4 The manifest enums (`xcodebuild: Could not resolve package dependencies`)
+
+```
+Package.swift:19:42: error: type 'ProductSetting.IOSAppInfo.AppIcon.PlaceholderIcon'
+                            has no member 'waveform'
+Package.swift:20:40: error: type 'ProductSetting.IOSAppInfo.AccentColor.PresetColor'
+                            has no member 'amber'
+```
+
+Both values were invented at authoring time. Xcode 16.4's `AppleProductTypes`
+accepts neither, and the resulting dependency failure is what kept
+`30-build-ios.log` from ever reaching the compiler — the build never started, so
+those logs contain no `.swift` errors at all.
+
+Fix, in two parts, because guessing twice is how this happened:
+
+1. The manifest now carries `.placeholder(icon: .star)` /
+   `.presetColor(.orange)`, with a comment stating that CI repairs them.
+2. A new workflow step, **"Discover AppleProductTypes enums and repair the
+   manifest"**, runs *before* the compilers. It:
+
+   * `find`s `AppleProductTypes.swiftinterface` inside `$DEVELOPER_DIR` and prints
+     the real `enum PlaceholderIcon` / `enum PresetColor` case lists into
+     `03-manifest-repair.log` — the authoritative answer, in the artifact;
+   * then walks an icon × accent candidate ladder, rewriting the two lines with
+     `sed` and accepting the first pair for which `xcodebuild -list -json` exits
+     0;
+   * prints `COMMIT THIS` to the job summary and fails loudly (restoring the
+     original manifest) if no pair resolves.
+
+   So Run 3 either resolves on its own or tells us the exact enum cases to use.
+   Nothing is committed by the runner.
+
+## E.3 A latent error the audit found, that Run 2 never reached
+
+`ProsodyTextRenderer` declares `struct ProsodyTextRenderer: TextRenderer,
+Animatable`. `TextRenderer` has two requirements: `draw(layout:in:)` **and**
+`displayPadding`. Appendix B.3 deleted `displayPadding` because no call site read
+it — true, and irrelevant: SwiftUI reads it, and the protocol requires it. The
+compiler had simply never typechecked that line in CI.
+
+Restored, with a comment explaining why it must not be deleted again:
+
+```swift
+var displayPadding: EdgeInsets {
+    EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0)
+}
+```
+
+This is the failure mode to expect from Run 2's logs generally: `-typecheck` runs
+the whole file set as **one** translation unit, so the first error in a function
+body aborts the rest of the check and hides every later error. That is why Run 2
+reported only one error per log.
+
+## E.4 Workflow changes
+
+| change | why |
+|---|---|
+| probe `-Xfrontend -continue-building-after-errors`, export as `SWIFT_CONTINUE_FLAG`, use in both typechecks and the DSP harness | turns one-error-per-run into many-errors-per-run; the flag is *probed*, so an SDK that rejects it just falls back |
+| new step 7, manifest repair (interface dump + candidate ladder) | stop hand-guessing `AppleProductTypes` enums |
+| icon step now also writes `Sources/Resources/AppIcon.xcassets` (`Contents.json` + `AppIcon.png`, universal 1024) | a loose PNG in `Resources` is not an asset; `.asset("AppIcon")` needs a real catalog |
+| `.asset("AppIcon")` probe uses **only** `xcodebuild -list -json` | `swift package describe` uses the plain ManifestAPI and can never resolve an App manifest — that was why the old probe could never pass; it also now matches any placeholder name, not just `.waveform` |
+| verdict table gained a `manifest repair` row, and the repair counts as a hard gate | a broken manifest fails everything downstream |
+
+## E.5 Still unverified after this pass
+
+* **Nothing above has been compiled.** Every fix was made on Windows by reading
+  the error text and the source. Run 3 is the test.
+* `MeshGradient` is now called with the plain four-argument initializer. The
+  `background:` / `smoothsColors:` / `colorSpace:` arguments were dropped rather
+  than verified, because the mesh already draws over an obsidian floor in the same
+  `ZStack`; the visual difference should be nil, but that is a claim for a
+  screenshot, not a claim made here.
+* The `.xcassets` layout is the modern single-size (universal 1024) form. Whether
+  `xcodebuild` accepts it *and* whether Swift Playgrounds picks the icon up are
+  both open — `50-icon-probe.log` answers the first, an iPad answers the second.
+* Whether `xcodebuild` can build a `.swiftpm` App package at all is still the
+  central unknown (D.7). If `30-build-ios.log` reports dependency resolution
+  again after the manifest repair, that is the thing to read first.
