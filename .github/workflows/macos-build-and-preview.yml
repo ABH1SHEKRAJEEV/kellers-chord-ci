@@ -198,19 +198,31 @@ jobs:
           CURRENT_ACCENT="${CURRENT_ACCENT:-orange}"
           echo "current: icon=$CURRENT_ICON accent=$CURRENT_ACCENT" | tee -a "$LOG"
 
-          # Most likely first; the loops exit on the first resolving pair.
-          ICONS="$CURRENT_ICON star square circle heart bolt diamond hexagon triangle"
-          ACCENTS="$CURRENT_ACCENT orange blue red green purple teal pink indigo yellow gray mint cyan"
+          # Most likely first. `awk '!seen[$0]++'` dedupes, because the current
+          # value is normally also the first candidate and a duplicate would burn
+          # two probe slots per outer iteration.
+          ICONS="$(printf '%s\n' "$CURRENT_ICON" star square circle heart bolt diamond hexagon triangle \
+            | awk '!seen[$0]++' | tr '\n' ' ')"
+          ACCENTS="$(printf '%s\n' "$CURRENT_ACCENT" orange blue red green purple teal pink indigo yellow gray mint cyan \
+            | awk '!seen[$0]++' | tr '\n' ' ')"
+          echo "ladder: icons=[$ICONS] accents=[$ACCENTS]" | tee -a "$LOG"
 
           WINNER=""
+          TRIES=0
+          MAX_TRIES=30   # each probe resolves packages; cap the total wall clock
           for icon in $ICONS; do
             for accent in $ACCENTS; do
+              if [ "$TRIES" -ge "$MAX_TRIES" ]; then
+                echo "attempt cap ($MAX_TRIES) reached" | tee -a "$LOG"
+                break 2
+              fi
+              TRIES=$((TRIES + 1))
               sed -i '' \
                 -e "s/appIcon: \.placeholder(icon: \.[a-zA-Z]*)/appIcon: .placeholder(icon: .$icon)/" \
                 -e "s/accentColor: \.presetColor(\.[a-zA-Z]*)/accentColor: .presetColor(.$accent)/" \
                 "$MANIFEST"
               if ( cd "$PKG_DIR" && xcodebuild -list -json > /dev/null 2>&1 ); then
-                WINNER="icon=.placeholder(icon: .$icon)  accentColor=.presetColor(.$accent)"
+                WINNER="appIcon: .placeholder(icon: .$icon)   accentColor: .presetColor(.$accent)"
                 echo "RESOLVED: $WINNER" | tee -a "$LOG"
                 break
               fi
@@ -228,12 +240,11 @@ jobs:
           {
             echo ""
             echo "## Manifest repair"
+            echo '```swift'
+            echo "$WINNER"
             echo '```'
-            echo "COMMIT THIS to Package.swift:"
-            echo "            appIcon: .$WINNER"
-            echo '```'
-            echo "Working value: $(grep -n 'appIcon' "$MANIFEST")"
-            echo "Accent value:  $(grep -n 'accentColor' "$MANIFEST")"
+            echo "Working appIcon:  $(grep -o 'appIcon: .*' "$MANIFEST" | head -1)"
+            echo "Working accent:   $(grep -o 'accentColor: .*' "$MANIFEST" | head -1)"
           } >> "$GITHUB_STEP_SUMMARY"
 
       # ════════════════════════════════════════════════════════════════════

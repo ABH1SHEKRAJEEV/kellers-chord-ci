@@ -1738,6 +1738,12 @@ reported only one error per log.
 | `.asset("AppIcon")` probe uses **only** `xcodebuild -list -json` | `swift package describe` uses the plain ManifestAPI and can never resolve an App manifest — that was why the old probe could never pass; it also now matches any placeholder name, not just `.waveform` |
 | verdict table gained a `manifest repair` row, and the repair counts as a hard gate | a broken manifest fails everything downstream |
 
+The ladder was exercised on Windows against a stand-in `xcodebuild` that rejects
+every pair except one, so the dedupe, the attempt cap (30), the rewrite and the
+restore-on-failure path are all known to run — not just to parse. What is *not*
+known is which pair the real SDK accepts; that is what `03-manifest-repair.log`
+and the job summary will say in Run 3.
+
 ## E.5 Still unverified after this pass
 
 * **Nothing above has been compiled.** Every fix was made on Windows by reading
