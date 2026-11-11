@@ -1,0 +1,546 @@
+name: macOS build, DSP tests & simulator preview
+
+# WHY THIS FILE EXISTS
+# --------------------
+# The development machine is Windows with zero Apple hardware. `SwiftUI`,
+# `AVFAudio`, `Accelerate`, `CoreHaptics` and `AppleProductTypes` exist only in
+# Apple SDKs, so no local toolchain can compile this package. A `macos-15`
+# runner has full Xcode 16.x plus iOS Simulators, so this workflow *is* the
+# project's compiler, test runner, icon renderer and screenshot camera.
+#
+# STAGE CONTRACT
+# --------------
+# HARD gates (a failure fails the job):
+#   1. typecheck every source against the iOS 18 simulator SDK
+#   2. typecheck every source against the macOS 15 SDK
+#   3. compile + run the DSP math harness
+#
+# SOFT stages (logged and uploaded, never fail the job):
+#   xcodebuild build (iOS / macOS), xcodebuild test, icon render,
+#   `.asset("AppIcon")` probe, simulator install/launch/screenshot/video.
+#
+# The point of the split: one run produces every diagnostic at once, and a
+# packaging quirk in the Swift Playgrounds product cannot hide a real math or
+# type error.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PKG_DIR: Actual_Project/KellersChord.swiftpm
+  ART: ci-artifacts
+  DERIVED: ci-derived
+  SIM_BUNDLE_ID: com.srm.kellerschord
+
+jobs:
+  macos:
+    name: Xcode build + DSP tests + simulator capture
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: "Select Xcode 16.4+ (fallback: newest installed)"
+        id: xcode
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo "Installed:"; ls -d /Applications/Xcode*.app 2>/dev/null || true
+
+          CANDIDATE=""
+          for preferred in \
+              /Applications/Xcode_16.4.app \
+              /Applications/Xcode_16.3.app \
+              /Applications/Xcode_16.2.app \
+              /Applications/Xcode_16.1.app \
+              /Applications/Xcode_16.0.app; do
+            if [ -d "$preferred" ]; then CANDIDATE="$preferred"; break; fi
+          done
+
+          if [ -z "$CANDIDATE" ]; then
+            CANDIDATE="$(ls -d /Applications/Xcode_1[6-9]*.app 2>/dev/null | sort -V | tail -1)"
+          fi
+          if [ -z "$CANDIDATE" ]; then
+            CANDIDATE="$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)"
+          fi
+          if [ -z "$CANDIDATE" ]; then
+            echo "::error::No Xcode installation found on this runner."
+            exit 1
+          fi
+
+          echo "Selecting $CANDIDATE"
+          sudo xcode-select -s "$CANDIDATE/Contents/Developer"
+          echo "DEVELOPER_DIR=$CANDIDATE/Contents/Developer" >> "$GITHUB_ENV"
+          {
+            echo "## Toolchain"
+            echo '```'
+            xcodebuild -version
+            swift --version
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Environment report
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "$ART"
+          {
+            echo "=== sw_vers ==="; sw_vers
+            echo; echo "=== xcodebuild -version ==="; xcodebuild -version
+            echo; echo "=== simulator runtimes ==="; xcrun simctl list runtimes
+            echo; echo "=== simulator devices (available) ==="
+            xcrun simctl list devices available
+            echo; echo "=== package files ==="
+            find "$PKG_DIR" -type f | sort
+          } 2>&1 | tee "$ART/00-environment.log"
+
+      - name: Resolve package manifest
+        id: manifest
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          cd "$PKG_DIR"
+          { echo "=== xcodebuild -list -json ==="; xcodebuild -list -json; } 2>&1 \
+            | tee "../../$ART/01-xcodebuild-list.log" || true
+          { echo "=== swift package describe ==="; swift package describe; } 2>&1 \
+            | tee "../../$ART/02-package-describe.log" || true
+
+          SCHEMES="$(xcodebuild -list -json 2>/dev/null | python3 -c 'import json,sys;d=json.load(sys.stdin);p=(d.get("workspace") or d.get("project") or {});print(" ".join(p.get("schemes") or []))' 2>/dev/null || true)"
+          echo "Discovered schemes: '${SCHEMES:-<none>}'"
+          echo "SCHEMES=$SCHEMES" >> "$GITHUB_ENV"
+
+      # CI-only stand-in for the accessor SwiftPM generates for
+      # `resources: [.process("Resources")]`. Compiling the sources outside
+      # SwiftPM would otherwise fail on `Bundle.module`, which is a harness
+      # artefact, not a defect in the app.
+      - name: Stage the Bundle.module shim
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ART/ci-shim"
+          printf '%s\n' \
+            '// CI-only stand-in for the accessor SwiftPM synthesizes for' \
+            '// `resources: [.process("Resources")]`. Never shipped.' \
+            'import Foundation' \
+            '' \
+            'extension Foundation.Bundle {' \
+            '    static let module: Bundle = .main' \
+            '}' > "$ART/ci-shim/BundleModuleShim.swift"
+          cat "$ART/ci-shim/BundleModuleShim.swift"
+
+      # ════════════════════════════════════════════════════════════════════
+      # HARD GATE 1 — iOS typecheck against the real iOS SDK
+      # ════════════════════════════════════════════════════════════════════
+      - name: Typecheck all sources against the iOS 18 simulator SDK
+        id: typecheck_ios
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+          FILES=$(find "$PKG_DIR/Sources" -name '*.swift' | sort)
+          echo "SDK: $SDK"
+          echo "Files:"; echo "$FILES" | nl
+          set -o pipefail
+          set +e
+          xcrun --sdk iphonesimulator swiftc \
+            -typecheck \
+            -parse-as-library \
+            -swift-version 5 \
+            -module-name AppModule \
+            -sdk "$SDK" \
+            -target arm64-apple-ios18.0-simulator \
+            $FILES "$ART/ci-shim/BundleModuleShim.swift" 2>&1 \
+            | tee "$ART/10-typecheck-ios.log"
+          RC=${PIPESTATUS[0]}
+          set -e
+          echo "iOS typecheck exit=$RC"
+          exit $RC
+
+      # ════════════════════════════════════════════════════════════════════
+      # HARD GATE 2 — macOS typecheck (the manifest declares macOS 15)
+      # ════════════════════════════════════════════════════════════════════
+      - name: Typecheck all sources against the macOS 15 SDK
+        id: typecheck_macos
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          SDK="$(xcrun --sdk macosx --show-sdk-path)"
+          FILES=$(find "$PKG_DIR/Sources" -name '*.swift' | sort)
+          echo "SDK: $SDK"
+          set -o pipefail
+          set +e
+          xcrun --sdk macosx swiftc \
+            -typecheck \
+            -parse-as-library \
+            -swift-version 5 \
+            -module-name AppModule \
+            -sdk "$SDK" \
+            -target arm64-apple-macosx15.0 \
+            $FILES "$ART/ci-shim/BundleModuleShim.swift" 2>&1 \
+            | tee "$ART/11-typecheck-macos.log"
+          RC=${PIPESTATUS[0]}
+          set -e
+          echo "macOS typecheck exit=$RC"
+          exit $RC
+
+      # ════════════════════════════════════════════════════════════════════
+      # HARD GATE 3 — DSP math harness (no SwiftPM, no XCTest, no @main)
+      # ════════════════════════════════════════════════════════════════════
+      - name: Compile and run the DSP harness
+        id: dsp
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          SDK="$(xcrun --sdk macosx --show-sdk-path)"
+          set -o pipefail
+          set +e
+          xcrun --sdk macosx swiftc \
+            -swift-version 5 \
+            -O \
+            -module-name DSPHarness \
+            -sdk "$SDK" \
+            -target arm64-apple-macosx15.0 \
+            "$PKG_DIR/Sources/Models/ProsodyFrame.swift" \
+            "$PKG_DIR/Sources/Models/EmotionalProfile.swift" \
+            "$PKG_DIR/Sources/Models/WordProsodySnapshot.swift" \
+            "$PKG_DIR/Sources/Engine/AudioSampleLoader.swift" \
+            "$PKG_DIR/Sources/Engine/ProceduralVoiceSynthesizer.swift" \
+            "$PKG_DIR/Sources/Engine/ProsodyDSPEngine.swift" \
+            "$ART/ci-shim/BundleModuleShim.swift" \
+            "$PKG_DIR/Tests/DSPHarness/main.swift" \
+            -o "$ART/dsp-harness" 2>&1 | tee "$ART/20-dsp-compile.log"
+          COMPILE_RC=${PIPESTATUS[0]}
+          set -e
+          if [ "$COMPILE_RC" -ne 0 ]; then
+            echo "::error::DSP harness failed to compile - see 20-dsp-compile.log"
+            exit "$COMPILE_RC"
+          fi
+
+          set +e
+          "./$ART/dsp-harness" 2>&1 | tee "$ART/21-dsp-tests.log"
+          TEST_RC=${PIPESTATUS[0]}
+          set -e
+          echo "DSP harness exit=$TEST_RC"
+          {
+            echo ""
+            echo "## DSP harness"
+            echo '```'
+            grep -E '^(PASS|FAIL| ALL CHECKS| [0-9]+ CHECK)' "$ART/21-dsp-tests.log" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$TEST_RC"
+
+      # ════════════════════════════════════════════════════════════════════
+      # SOFT — real `xcodebuild build` of the Swift Playgrounds App product
+      # ════════════════════════════════════════════════════════════════════
+      - name: Build with xcodebuild (iOS Simulator)
+        id: build_ios
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          cd "$PKG_DIR"
+          SCHEME="$(echo "${SCHEMES:-}" | awk '{print $1}')"
+          [ -z "${SCHEME:-}" ] && SCHEME="KellersChord"
+          echo "Using scheme: $SCHEME"
+          set -o pipefail
+          set +e
+          xcodebuild build \
+            -scheme "$SCHEME" \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "../../$DERIVED" \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            SWIFT_EMIT_LOC_STRINGS=NO 2>&1 | tee "../../$ART/30-build-ios.log"
+          RC=${PIPESTATUS[0]}
+          set -e
+          echo "iOS build exit=$RC"
+          find "../../$DERIVED/Build/Products" -maxdepth 2 -name '*.app' -type d 2>/dev/null || true
+          exit $RC
+
+      - name: Build with xcodebuild (macOS)
+        id: build_macos
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          cd "$PKG_DIR"
+          SCHEME="$(echo "${SCHEMES:-}" | awk '{print $1}')"
+          [ -z "${SCHEME:-}" ] && SCHEME="KellersChord"
+          set -o pipefail
+          set +e
+          xcodebuild build \
+            -scheme "$SCHEME" \
+            -destination 'platform=macOS' \
+            -derivedDataPath "../../$DERIVED-macos" \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            SWIFT_EMIT_LOC_STRINGS=NO 2>&1 | tee "../../$ART/31-build-macos.log"
+          RC=${PIPESTATUS[0]}
+          set -e
+          echo "macOS build exit=$RC"
+          exit $RC
+
+      # ════════════════════════════════════════════════════════════════════
+      # SOFT — XCTest surface (linking an executable target is the fragile bit)
+      # ════════════════════════════════════════════════════════════════════
+      - name: Run XCTest suite (xcodebuild test)
+        id: unit_tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          cd "$PKG_DIR"
+          UDID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys;d=json.load(sys.stdin)["devices"];print(next((x["udid"] for r in sorted(d,reverse=True) for x in d[r] if "iPad" in x["name"]),""))' 2>/dev/null || true)"
+          echo "Test simulator UDID: ${UDID:-<none>}"
+          if [ -n "${UDID:-}" ]; then
+            DEST="-destination id=$UDID"
+          else
+            DEST="-destination platform=macOS"
+          fi
+
+          LOG="../../$ART/40-xcodebuild-test.log"
+          set -o pipefail
+          set +e
+
+          echo "--- attempt 1: app scheme, -only-testing:KellersChordTests ---" | tee "$LOG"
+          xcodebuild test -scheme KellersChord $DEST \
+            -derivedDataPath "../../$DERIVED" \
+            -only-testing:KellersChordTests \
+            -skipPackagePluginValidation -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee -a "$LOG"
+          RC=${PIPESTATUS[0]}
+
+          if [ "$RC" -ne 0 ]; then
+            echo "--- attempt 2: autogenerated test scheme KellersChordTests ---" | tee -a "$LOG"
+            xcodebuild test -scheme KellersChordTests $DEST \
+              -derivedDataPath "../../$DERIVED" \
+              -skipPackagePluginValidation -skipMacroValidation \
+              CODE_SIGNING_ALLOWED=NO 2>&1 | tee -a "$LOG"
+            RC=${PIPESTATUS[0]}
+          fi
+
+          if [ "$RC" -ne 0 ]; then
+            echo "--- attempt 3: swift test (needs AppleProductTypes in the toolchain) ---" | tee -a "$LOG"
+            swift test 2>&1 | tee -a "$LOG"
+            RC=${PIPESTATUS[0]}
+          fi
+
+          set -e
+          echo "XCTest exit=$RC"
+          exit $RC
+
+      # ════════════════════════════════════════════════════════════════════
+      # SOFT — AppIcon.svg → 1024×1024 AppIcon.png inside the bundled resources
+      # ════════════════════════════════════════════════════════════════════
+      - name: Render AppIcon.svg to a 1024px AppIcon.png
+        id: icon
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          SVG="$PKG_DIR/Sources/Resources/AppIcon.svg"
+          OUT="$PKG_DIR/Sources/Resources/AppIcon.png"
+          mkdir -p "$ART/icon"
+          [ -f "$SVG" ] || { echo "::error::AppIcon.svg is missing"; exit 1; }
+
+          rm -f "$ART/icon/AppIcon.svg.png" "$OUT"
+
+          # qlmanage exists on every macOS runner and renders SVG via QuickLook.
+          qlmanage -t -s 1024 -o "$ART/icon" "$SVG" > "$ART/icon/render.log" 2>&1 || true
+
+          if [ -f "$ART/icon/AppIcon.svg.png" ]; then
+            cp "$ART/icon/AppIcon.svg.png" "$OUT"
+            echo "Rendered with qlmanage." | tee -a "$ART/icon/render.log"
+          else
+            echo "qlmanage produced nothing; falling back to cairosvg." | tee -a "$ART/icon/render.log"
+            python3 -m pip install --quiet --disable-pip-version-check cairosvg >> "$ART/icon/render.log" 2>&1 || true
+            python3 -c 'import sys,cairosvg;cairosvg.svg2png(url=sys.argv[1], write_to=sys.argv[2], output_width=1024, output_height=1024)' \
+              "$SVG" "$OUT" >> "$ART/icon/render.log" 2>&1 || true
+          fi
+
+          if [ ! -f "$OUT" ]; then
+            echo "::error::AppIcon.png was not produced"
+            tail -30 "$ART/icon/render.log"
+            exit 1
+          fi
+
+          sips -z 1024 1024 "$OUT" --out "$OUT" > "$ART/icon/sips.log" 2>&1 || true
+
+          # App icons must not carry an alpha channel. The SVG paints an opaque
+          # #08090C background, but QuickLook still emits an alpha channel, so
+          # flatten through a 8-bit JPEG round-trip when one is present.
+          ALPHA="$(sips -g hasAlpha "$OUT" 2>/dev/null | awk '/hasAlpha/ {print $2}')"
+          if [ "$ALPHA" = "yes" ]; then
+            echo "Flattening alpha channel." | tee -a "$ART/icon/render.log"
+            sips -s format jpeg -s formatOptions 100 "$OUT" --out "$ART/icon/flatten.jpg" > /dev/null 2>&1 || true
+            if [ -f "$ART/icon/flatten.jpg" ]; then
+              sips -s format png "$ART/icon/flatten.jpg" --out "$OUT" > /dev/null 2>&1 || true
+            fi
+          fi
+
+          sips -g pixelWidth -g pixelHeight -g hasAlpha "$OUT" | tee "$ART/icon/sips-report.log"
+          BYTES="$(wc -c < "$OUT" | tr -d ' ')"
+          echo "AppIcon.png size: ${BYTES} bytes" | tee -a "$ART/icon/sips-report.log"
+          [ "$BYTES" -gt 5000 ] || { echo "::error::Icon looks blank (${BYTES} bytes)"; exit 1; }
+          cp "$OUT" "$ART/icon/AppIcon.png"
+
+          W="$(sips -g pixelWidth "$OUT" | awk '/pixelWidth/ {print $2}')"
+          H="$(sips -g pixelHeight "$OUT" | awk '/pixelHeight/ {print $2}')"
+          echo "AppIcon.png = ${W}x${H}"
+          [ "$W" = "1024" ] && [ "$H" = "1024" ] || { echo "::error::Icon is not 1024x1024"; exit 1; }
+
+      - name: Probe appIcon .asset("AppIcon") in Package.swift
+        id: icon_probe
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          MANIFEST="$PKG_DIR/Package.swift"
+          BACKUP="$ART/icon/Package.swift.before-asset-probe"
+          LOG="$ART/50-icon-probe.log"
+          cp "$MANIFEST" "$BACKUP"
+
+          if ! grep -q 'appIcon: .placeholder' "$MANIFEST"; then
+            echo "Manifest is not on .placeholder; nothing to probe." | tee "$LOG"
+            exit 0
+          fi
+
+          sed -i '' 's/appIcon: \.placeholder(icon: \.waveform)/appIcon: .asset("AppIcon")/' "$MANIFEST"
+          grep -n 'appIcon' "$MANIFEST" | tee "$LOG"
+
+          set +e
+          ( cd "$PKG_DIR" && xcodebuild -list -json ) >> "$LOG" 2>&1
+          RC_LIST=$?
+          ( cd "$PKG_DIR" && swift package describe ) >> "$LOG" 2>&1
+          RC_DESCRIBE=$?
+          set -e
+
+          if [ "$RC_LIST" -eq 0 ] && [ "$RC_DESCRIBE" -eq 0 ]; then
+            echo "VERDICT: appIcon .asset(\"AppIcon\") resolves cleanly." | tee -a "$LOG"
+            echo "The manifest is left on .asset for the rest of this run only."
+          else
+            echo "VERDICT: .asset(\"AppIcon\") did NOT resolve (list=$RC_LIST describe=$RC_DESCRIBE)." | tee -a "$LOG"
+            echo "Restoring .placeholder so the package keeps building." | tee -a "$LOG"
+            cp "$BACKUP" "$MANIFEST"
+            tail -40 "$LOG"
+            exit 1
+          fi
+
+      # ════════════════════════════════════════════════════════════════════
+      # SOFT — boot an iPad simulator, install, launch, screenshot + video
+      # ════════════════════════════════════════════════════════════════════
+      - name: Boot iPad simulator, install, launch and capture
+        id: preview
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "$ART/preview"
+          NOTES="$ART/preview/NOTES.txt"
+
+          APP="$(find "$DERIVED/Build/Products" -maxdepth 3 -name '*.app' -type d 2>/dev/null | head -1)"
+          if [ -z "${APP:-}" ]; then
+            echo "::error::No .app was produced, so there is nothing to install."
+            echo "See 30-build-ios.log in the artifact bundle." | tee "$NOTES"
+            exit 1
+          fi
+          echo "APP=$APP" | tee "$NOTES"
+
+          UDID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys;d=json.load(sys.stdin)["devices"];print(next((x["udid"] for r in sorted(d,reverse=True) for x in d[r] if "iPad" in x["name"]),""))' 2>/dev/null || true)"
+          [ -n "${UDID:-}" ] || { echo "::error::No iPad simulator available"; exit 1; }
+
+          NAME="$(xcrun simctl list devices -j | python3 -c 'import json,sys;udid=sys.argv[1];d=json.load(sys.stdin)["devices"];print(next((x["name"] for r in d for x in d[r] if x["udid"]==udid),"unknown"))' "$UDID")"
+          echo "Simulator: $NAME ($UDID)" | tee -a "$NOTES"
+
+          xcrun simctl boot "$UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl status_bar "$UDID" override --time '9:41' \
+            --batteryState charged --batteryLevel 100 --wifiBars 3 --cellularBars 4 || true
+
+          xcrun simctl install "$UDID" "$APP"
+          xcrun simctl launch "$UDID" "$SIM_BUNDLE_ID" | tee -a "$NOTES"
+          sleep 6
+
+          # Video first, so the whole cold launch is on tape.
+          xcrun simctl io "$UDID" recordVideo --codec=h264 --force \
+            "$ART/preview/launch_walkthrough.mov" > /dev/null 2>&1 &
+          REC_PID=$!
+          sleep 10
+
+          xcrun simctl io "$UDID" screenshot "$ART/preview/01-launch-light.png" || true
+          xcrun simctl ui "$UDID" appearance dark || true
+          sleep 2
+          xcrun simctl io "$UDID" screenshot "$ART/preview/02-launch-dark.png" || true
+          xcrun simctl ui "$UDID" appearance light || true
+
+          xcrun simctl terminate "$UDID" "$SIM_BUNDLE_ID" 2>/dev/null || true
+          xcrun simctl launch "$UDID" "$SIM_BUNDLE_ID" > /dev/null 2>&1 || true
+          sleep 5
+          xcrun simctl io "$UDID" screenshot "$ART/preview/03-relaunch.png" || true
+
+          kill -INT "$REC_PID" 2>/dev/null || true
+          sleep 2
+          wait "$REC_PID" 2>/dev/null || true
+
+          xcrun simctl spawn "$UDID" log show --last 3m --style compact \
+            --predicate 'process == "KellersChord"' \
+            > "$ART/preview/app-log.txt" 2>&1 || true
+          ls -la "$ART/preview" | tee -a "$NOTES"
+
+      # ════════════════════════════════════════════════════════════════════
+      - name: Verdict
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo ""
+            echo "## Verdict"
+            echo "| stage | result |"
+            echo "|---|---|"
+            echo "| iOS typecheck (hard) | ${{ steps.typecheck_ios.outcome }} |"
+            echo "| macOS typecheck (hard) | ${{ steps.typecheck_macos.outcome }} |"
+            echo "| DSP harness (hard) | ${{ steps.dsp.outcome }} |"
+            echo "| xcodebuild build iOS | ${{ steps.build_ios.outcome }} |"
+            echo "| xcodebuild build macOS | ${{ steps.build_macos.outcome }} |"
+            echo "| xcodebuild test | ${{ steps.unit_tests.outcome }} |"
+            echo "| icon render | ${{ steps.icon.outcome }} |"
+            echo "| .asset probe | ${{ steps.icon_probe.outcome }} |"
+            echo "| simulator preview | ${{ steps.preview.outcome }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          FAILED=0
+          for outcome in \
+            "${{ steps.typecheck_ios.outcome }}" \
+            "${{ steps.typecheck_macos.outcome }}" \
+            "${{ steps.dsp.outcome }}"; do
+            [ "$outcome" = "failure" ] && FAILED=1
+          done
+          [ "$FAILED" -eq 1 ] && exit 1
+          echo "All hard gates passed."
+
+      - name: Upload artifacts (logs, screenshots, video, icon, harness)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kellerschord-ci-${{ github.run_number }}
+          path: |
+            ci-artifacts/**
+            ci-derived/Logs/**
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 6

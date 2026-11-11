@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Xcode for Windows</title>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<header class="titlebar">
+  <div class="titlebar-left">
+    <span class="brand" aria-hidden="true">◈</span>
+    <span class="workspace-name" id="workspaceName">No workspace</span>
+    <span class="manifest-chip" id="manifestChip" hidden></span>
+  </div>
+  <div class="titlebar-right">
+    <span class="dirty-dot" id="dirtyDot" hidden title="Unsaved changes">●</span>
+    <button class="tb-btn" id="saveBtn" disabled>Save</button>
+    <button class="tb-btn" id="reindexBtn">Reindex</button>
+  </div>
+</header>
+
+<main class="layout">
+  <!-- ── Navigator ─────────────────────────────────────────────────────── -->
+  <nav class="pane pane-navigator" aria-label="Project navigator">
+    <div class="pane-head">
+      <span>Navigator</span>
+      <span class="pane-count" id="fileCount"></span>
+    </div>
+    <div class="pane-scroll" id="tree" role="tree"></div>
+    <div class="pane-head pane-head-sub">
+      <span>Package</span>
+    </div>
+    <div class="pane-scroll pane-scroll-short" id="packageInfo"></div>
+  </nav>
+
+  <!-- ── Editor ────────────────────────────────────────────────────────── -->
+  <section class="pane pane-editor" aria-label="Source editor">
+    <div class="editor-head">
+      <div class="breadcrumb" id="breadcrumb">No file open</div>
+      <div class="editor-meta" id="editorMeta"></div>
+    </div>
+    <div class="jumpbar" id="jumpbar"></div>
+    <div class="editor-wrap">
+      <div class="gutter" id="gutter" aria-hidden="true"></div>
+      <div class="code-area">
+        <pre class="highlight" id="highlight" aria-hidden="true"></pre>
+        <textarea
+          id="editor"
+          class="editor-input"
+          spellcheck="false"
+          autocomplete="off"
+          autocapitalize="off"
+          wrap="off"
+          aria-label="Swift source code"></textarea>
+      </div>
+    </div>
+    <div class="empty-state" id="emptyState">
+      <p class="empty-title">Open a Swift file</p>
+      <p class="empty-hint">Pick a file from the navigator to read and edit it.</p>
+    </div>
+  </section>
+
+  <!-- ── Inspector ─────────────────────────────────────────────────────── -->
+  <aside class="pane pane-inspector" aria-label="Inspector">
+    <div class="pane-head">
+      <span>Issues</span>
+      <span class="pane-count" id="issueCount"></span>
+    </div>
+    <div class="filter-row" role="group" aria-label="Filter issues by severity">
+      <button class="filter is-on" data-sev="all">All</button>
+      <button class="filter" data-sev="error">Errors</button>
+      <button class="filter" data-sev="warning">Warnings</button>
+      <button class="filter" data-sev="info">Info</button>
+    </div>
+    <div class="pane-scroll" id="issues" role="list"></div>
+  </aside>
+</main>
+
+<footer class="statusbar">
+  <span id="statusMessage">Ready</span>
+  <span class="status-right">
+    <span id="cursorPos">—</span>
+    <span class="status-sep" aria-hidden="true">|</span>
+    <span id="issueSummary">—</span>
+  </span>
+</footer>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

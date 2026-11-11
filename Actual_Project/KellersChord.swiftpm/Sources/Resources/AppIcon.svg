@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Keller's Chord — 1024 x 1024 app icon.
+
+  Concept: a cymatic chord (three concentric nodal rings, one per emotion in the
+  app's palette) collapsing into a single golden node, with the caption line below
+  it breaking into three bars — the moment sound becomes type you can read.
+
+  Palette is taken directly from Sources/DesignSystem/ThemeTokens.swift so the icon
+  and the app cannot drift apart:
+    obsidian #08090C  amber #F59E0B  sky #38BDF8  crimson #F43F5E
+
+  Render: open in any browser, or use AppIconGeneratorView.swift on device.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024"
+     viewBox="0 0 1024 1024" role="img" aria-label="Keller's Chord app icon">
+
+  <defs>
+    <!-- Soft amber bloom behind the chord, so the rings sit in light. -->
+    <radialGradient id="bloom" cx="0.5" cy="0.445" r="0.55">
+      <stop offset="0"    stop-color="#F59E0B" stop-opacity="0.30"/>
+      <stop offset="0.45" stop-color="#F59E0B" stop-opacity="0.10"/>
+      <stop offset="1"    stop-color="#08090C" stop-opacity="0"/>
+    </radialGradient>
+
+    <linearGradient id="core" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#FFD37A"/>
+      <stop offset="1" stop-color="#F59E0B"/>
+    </linearGradient>
+
+    <linearGradient id="bar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#F59E0B"/>
+      <stop offset="1" stop-color="#FFD37A"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Obsidian canvas -->
+  <rect width="1024" height="1024" fill="#08090C"/>
+  <rect width="1024" height="1024" fill="url(#bloom)"/>
+
+  <!-- Cymatic chord: three nodal rings, one per emotion. -->
+  <g fill="none" stroke-linecap="round">
+    <circle cx="512" cy="435" r="330" stroke="#38BDF8" stroke-width="10" stroke-opacity="0.28"/>
+    <circle cx="512" cy="435" r="245" stroke="#F43F5E" stroke-width="12" stroke-opacity="0.42"/>
+    <circle cx="512" cy="435" r="160" stroke="#F59E0B" stroke-width="18" stroke-opacity="0.88"/>
+  </g>
+
+  <!-- The single resolved node. -->
+  <circle cx="512" cy="435" r="66" fill="url(#core)"/>
+
+  <!-- Sound becoming type: the caption line breaking into readable bars. -->
+  <g>
+    <rect x="192" y="774" width="640" height="44" rx="22" fill="#23262E"/>
+    <rect x="272" y="842" width="480" height="44" rx="22" fill="#2C3038"/>
+    <rect x="352" y="910" width="320" height="44" rx="22" fill="url(#bar)"/>
+  </g>
+</svg>
