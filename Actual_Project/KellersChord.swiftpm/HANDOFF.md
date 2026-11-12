@@ -2032,3 +2032,64 @@ produced two byte-identical PNGs) is visible in `NOTES.txt` instead of silent.
   that frame before the screenshot is taken is unproven.
 * Act II and Act III still use their v1 single-column compositions. They inherit
   the new type scale, palette and chrome, but they have not been recomposed.
+
+### G.6 Run 6 regression: two declaration errors (fixed) and what the logs proved
+
+Run 6 (`kellerschord-ci-6`) regressed the two typechecks and the new model
+harness. Everything that was already green stayed green (`DSP harness`,
+`manifest repair`, `Text.Layout idiom probe`, `icon render`, `.asset probe`),
+which confirms the gate split works: one bad declaration cannot hide the math.
+
+Both logs were 7 lines long, and that is the important detail: a
+**declaration-validation** error (`invalid redeclaration`) aborts the compile
+before type-checking any function body, so neither log could show a second
+error. The fix therefore had to be validated by audit, not by the log.
+
+| # | location | error | gate(s) |
+|---|---|---|---|
+| 1 | `Sources/DesignSystem/EmotionalMeshBackground.swift:60:13` | `invalid redeclaration of 'base'` | iOS typecheck, macOS typecheck |
+| 2 | `Tests/ModelHarness/main.swift:35:31` | `cannot convert value of type 'StaticString' to type 'NSString' in coercion` | model harness |
+
+**Error 1.** `blendedStops` already bound `let base = ThemeTokens.Palette.neutral`
+(the three neutral stops). G.3 added a second `let base = 0.62` in the same
+function for the colour-mix floor. Renamed to `floorMix`; the mix maths is
+unchanged, so the visual result of G.3 is preserved exactly.
+
+**Error 2.** The harness shim used `(file as NSString).lastPathComponent` in a
+`print` to shorten `#filePath`. `StaticString` does not bridge to `NSString`.
+It is `CustomStringConvertible`, so the shim now does
+`String(describing: file).split(separator: "/").last`.
+
+**Why no third error is expected (audit performed, not assumed):**
+
+1. Scope-duplicate scan over every Swift file: the only repeated member names
+   are local `let`s inside *different* functions (or `draw` overloads that run 5
+   already compiled). No other same-scope redeclaration exists.
+2. New-API diff between the run-5 tree and this tree: apart from this project's
+   own new names, the only system symbols introduced are
+   `VerticalAlignment.firstTextBaseline`, `AccessibilityTraits.isHeader`,
+   `.toggleStyle(.switch)`, the `.task {}` modifier and
+   `ProcessInfo.processInfo.arguments` — all standard, and every other new
+   construct (`Canvas`, `context.stroke`, `[.isButton, .isSelected]`,
+   `ForEach(Array(x.enumerated()), id: \.offset)`, `{ index, sample in }`) is
+   already compiled code from run 5.
+3. Brace / paren / `#if` balance and symbol-undefined scan across all 30 files.
+4. Memberwise-init argument order checked by hand for all three acts against
+   `RootCoordinatorView` (Act I gained `initiallyUnlocked`, Act II
+   `previewFrame`, Act III `openInDuet`, each in declaration order).
+
+Preview artifacts are also renamed to the four states that were asked for,
+plus the judge's cold-launch screen:
+
+```
+preview/act1_guess.png      cold launch, no flags
+preview/act1_unlocked.png   --ci-act1-unlocked
+preview/act2_chladni.png    --ci-act2-chladni
+preview/act3_mirror.png     --ci-act3-mirror
+preview/act3_duet.png       --ci-act3-duet
+preview/act_tour.mov        the whole tour, H.264
+```
+
+Still unverified after this fix: whether the new Act I composition looks good
+(no human has seen it), and whether Act II renders its seeded frame before the
+screenshot timer fires.

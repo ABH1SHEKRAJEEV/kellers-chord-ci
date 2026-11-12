@@ -656,11 +656,11 @@ jobs:
           REC_PID=$!
           sleep 2
 
-          capture "01_act1_guess"
-          capture "02_act1_unlocked"  --ci-act1-unlocked
-          capture "03_act2_chladni"   --ci-act2-chladni
-          capture "04_act3_mirror"    --ci-act3-mirror
-          capture "05_act3_duet"      --ci-act3-duet
+          capture "act1_guess"
+          capture "act1_unlocked"  --ci-act1-unlocked
+          capture "act2_chladni"   --ci-act2-chladni
+          capture "act3_mirror"    --ci-act3-mirror
+          capture "act3_duet"      --ci-act3-duet
 
           kill -INT "$REC_PID" 2>/dev/null || true
           sleep 2

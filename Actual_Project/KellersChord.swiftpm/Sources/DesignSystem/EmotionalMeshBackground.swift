@@ -57,9 +57,11 @@ struct EmotionalMeshBackground: View {
         // silence render as pure black - the whole app read as lifeless slate in the
         // run-5 screenshots. The base field now carries the emotion's colour at all
         // times, and audio only adds to it, so motion means "this is the voice".
-        let base = 0.62
+        // (Named `floorMix`, not `base`: `base` already holds the neutral palette
+        // above, and shadowing it was run 6's only typecheck error.)
+        let floorMix = 0.62
         let live = frame.isVoiced ? (0.20 + 0.80 * energy) : 0
-        let mix = min((base + live * 0.70) * intensityScale, 1.0)
+        let mix = min((floorMix + live * 0.70) * intensityScale, 1.0)
 
         func blend(_ a: Color, _ b: Color) -> Color {
             let lhs = a.resolve(in: environment)

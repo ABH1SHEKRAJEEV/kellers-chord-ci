@@ -32,7 +32,11 @@ var checkCount = 0
 var failureCount = 0
 
 private func report(_ text: String, file: StaticString, line: UInt) {
-    print("FAIL: \(text)  [\((file as NSString).lastPathComponent):\(line)]")
+    // `StaticString` is not bridgeable to `NSString` (run 6's harness error), but it
+    // is `CustomStringConvertible`, so describe it and keep only the file name.
+    let path = String(describing: file)
+    let name = path.split(separator: "/").last.map(String.init) ?? path
+    print("FAIL: \(text)  [\(name):\(line)]")
 }
 
 private func tally() { checkCount += 1 }
