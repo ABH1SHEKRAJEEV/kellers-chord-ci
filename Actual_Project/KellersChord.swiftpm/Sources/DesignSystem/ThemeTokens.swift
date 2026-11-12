@@ -40,11 +40,16 @@ enum ThemeTokens {
             Color(hex: 0x270914)    // Burnt Obsidian
         ]
 
-        /// Flat caption baseline: slate fading into obsidian.
+        /// Flat caption baseline / idle: a designed ink field, not black.
+        ///
+        /// v1 used three near-black stops for `neutral`, so an idle app (no audio
+        /// yet) rendered as an empty black rectangle - the first thing the eye saw
+        /// in the run-5 screenshots. The idle state now has a real field: deep ink
+        /// blue into plum, so the app has an identity before anyone speaks.
         static let neutral: [Color] = [
-            Color(hex: 0x16181D),
-            Color(hex: 0x0E1014),
-            Color(hex: 0x08090C)
+            Color(hex: 0x1E2A44),   // Ink blue
+            Color(hex: 0x2A1E3A),   // Plum ink
+            Color(hex: 0x0B0D12)    // Obsidian floor
         ]
 
         /// The ordered palette for an emotion.
@@ -113,6 +118,56 @@ enum ThemeTokens {
         static let stage: CGFloat = 44
     }
 
+    // MARK: - Type scale (v2)
+    //
+    // The v1 scale was five sizes between 11 and 24 with `hero` at 44, which is
+    // why every screen read as a form: nothing was ever *large*. The v2 scale has
+    // one genuinely big size (`display`, 64-84 depending on width), one headline,
+    // one body and one label. Headline-to-body ratio is ~3.8, close to the 4.3
+    // median of the studied gallery sites, and the old 11pt tracked caps labels are
+    // gone (uppercase + letterspacing at 11pt is the single most common generated
+    // page tell).
+    enum Text {
+        /// The one big thing on each screen. Sized by the caller for the width.
+        static func display(_ size: CGFloat = 64) -> Font {
+            .system(size: size, weight: .semibold, design: .default)
+        }
+        /// Section headline.
+        static let headline = Font.system(size: 30, weight: .semibold)
+        /// Supporting sentence directly under a headline.
+        static let subhead = Font.system(size: 19, weight: .regular)
+        /// Running text. Full ink, never grey.
+        static let body = Font.system(size: 17, weight: .regular)
+        /// Secondary notes and control labels. Sentence case.
+        static let label = Font.system(size: 14, weight: .medium)
+        /// Numeric readouts that change in place.
+        static let metric = Font.system(size: 13, weight: .medium, design: .monospaced)
+        /// The wordmark.
+        static let wordmark = Font.system(size: 15, weight: .bold)
+    }
+
+    // MARK: - Surfaces (tone steps, never lines)
+
+    /// Three flat tone steps above obsidian. Surfaces are separated by a step in
+    /// tone; the old build separated everything with 1 pt strokes, which is what
+    /// made it read as a stack of wireframes rather than a designed surface.
+    enum Surface {
+        static let level0 = Color(hex: 0x08090C)
+        static let level1 = Color(hex: 0x101319)
+        static let level2 = Color(hex: 0x171B23)
+        static let level3 = Color(hex: 0x1F242E)
+    }
+
+    /// The app's own colour, independent of emotion: ember on ink. Used for the
+    /// wordmark, the primary action and the idle field, so the app has an
+    /// identity before any audio exists (v1 showed nothing at all while idle).
+    enum House {
+        static let ember = Color(hex: 0xF59E0B)
+        static let ink = Color(hex: 0x0E1116)
+        static let paper = Color(hex: 0xF6F4EF)
+        static let slate = Color(hex: 0x1B2130)
+    }
+
     // MARK: - Typography scales
 
     enum Typography {
@@ -121,7 +176,13 @@ enum ThemeTokens {
         /// Shares its family with `caption` so the Act I A/B is a pure prosody
         /// comparison. Emotion is carried by `ProsodyTextRenderer` (bloom, wave,
         /// shear) and `emphasisWeight(for:)` - not by the typeface.
-        static let hero = Font.system(size: 44, weight: .semibold)
+        ///
+        /// v2 removed `design: .rounded` from every style. The rounded system face
+        /// is iOS's default "friendly app" voice: it made all three acts read as the
+        /// same generic product, and it undercut the one place the app needs an
+        /// editorial tone - the caption the whole project is about. SF with weight
+        /// contrast and a larger scale does the same job with a real voice.
+        static let hero = Font.system(size: 56, weight: .semibold)
         /// The sterile Act I baseline face.
         ///
         /// Deliberately the SAME family as `hero` with the same optical size, so the
@@ -131,13 +192,13 @@ enum ThemeTokens {
         /// would hand the viewer a second, unrelated variable and contaminate the
         /// app's single most important comparison.) Monospace is reserved for
         /// `metric`, where digits genuinely change in place.
-        static let caption = Font.system(size: 44, weight: .regular)
+        static let caption = Font.system(size: 56, weight: .regular)
         /// Section titles.
-        static let title = Font.system(size: 24, weight: .semibold, design: .rounded)
+        static let title = Font.system(size: 28, weight: .semibold)
         /// Supporting body copy.
-        static let body = Font.system(size: 16, weight: .regular, design: .rounded)
-        /// The tiny act pill / badge label.
-        static let pill = Font.system(size: 11, weight: .bold, design: .rounded)
+        static let body = Font.system(size: 17, weight: .regular)
+        /// Control and badge labels.
+        static let pill = Font.system(size: 13, weight: .semibold)
         /// Numeric metric readouts.
         static let metric = Font.system(size: 13, weight: .medium, design: .monospaced)
     }

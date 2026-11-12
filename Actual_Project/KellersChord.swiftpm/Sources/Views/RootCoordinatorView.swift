@@ -30,6 +30,9 @@ struct RootCoordinatorView: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// The launch flags CI passes to open a specific state for screenshots.
+    private let intent = LaunchIntent.current()
+
     var body: some View {
         // §9 Rule 5: drive the 60fps clock through `TimelineView(.animation(...))`
         // with a `paused` flag, never a leaking `Timer.publish`. It pauses when
@@ -44,12 +47,15 @@ struct RootCoordinatorView: View {
                 )
 
                 VStack(spacing: 0) {
-                    actPill
-                        .padding(.horizontal, ThemeTokens.Spacing.section)
-                        .padding(.top, ThemeTokens.Spacing.regular)
+                    WordmarkBar(
+                        current: model.actStage,
+                        emotion: model.currentFrame.classifiedEmotion,
+                        progress: model.progress,
+                        onSelect: { stage in advance(to: stage) }
+                    )
 
                     actContent(elapsedTime: timeline.date.timeIntervalSinceReferenceDate)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         .transition(.opacity)
                 }
             }
@@ -58,84 +64,6 @@ struct RootCoordinatorView: View {
         .preferredColorScheme(.dark)
         .onAppear(perform: prepare)
         .onDisappear(perform: teardown)
-    }
-
-    // MARK: - Progress pill
-
-    /// The only chrome: a glass pill with a free-switching Act I / II / III
-    /// control and a thin progress bar for the current act's share of the run.
-    ///
-    /// The acts are deliberately *not* gated: a judge can jump straight to Act III
-    /// in the first second. The original 180-second lock made the best material
-    /// unreachable for anyone who did not sit through the whole choreography.
-    private var actPill: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: ThemeTokens.Spacing.tight) {
-                ForEach(ActStage.allCases) { stage in
-                    actSwitchButton(stage)
-                }
-                Spacer(minLength: 0)
-                Text(model.actStage.timecode)
-                    .font(ThemeTokens.Typography.pill)
-                    .foregroundStyle(ThemeTokens.textSecondary)
-                    .accessibilityHidden(true)
-            }
-
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(ThemeTokens.glassStroke)
-                    Capsule()
-                        .fill(ThemeTokens.accent(for: model.currentFrame.classifiedEmotion))
-                        .frame(width: max(6, geometry.size.width * model.progress))
-                }
-            }
-            .frame(height: 4)
-            .accessibilityElement()
-            .accessibilityLabel("Experience progress")
-            .accessibilityValue("\(model.actStage.timecode), \(Int(model.progress * 100)) percent complete")
-        }
-        .padding(.horizontal, ThemeTokens.Spacing.regular)
-        .padding(.vertical, 12)
-        .background(
-            RoundedRectangle(cornerRadius: ThemeTokens.Radius.pill, style: .continuous)
-                .fill(ThemeTokens.glassFill)
-                .overlay(
-                    RoundedRectangle(cornerRadius: ThemeTokens.Radius.pill, style: .continuous)
-                        .stroke(ThemeTokens.glassStroke, lineWidth: 1)
-                )
-        )
-        // `.contain`, never `.combine`: combining would merge the three segments
-        // into one accessibility element and make them untappable by VoiceOver.
-        .accessibilityElement(children: .contain)
-    }
-
-    /// One segment of the free-switching act control.
-    private func actSwitchButton(_ stage: ActStage) -> some View {
-        let isCurrent = stage == model.actStage
-        return Button {
-            guard !isCurrent else { return }
-            advance(to: stage)
-        } label: {
-            Text(stage.shortLabel)
-                .font(ThemeTokens.Typography.pill)
-                .fontWeight(isCurrent ? .bold : .regular)
-                .foregroundStyle(isCurrent ? ThemeTokens.obsidian : ThemeTokens.textSecondary)
-                .frame(minWidth: 34, minHeight: 26)
-                .background(
-                    Capsule(style: .continuous)
-                        .fill(isCurrent
-                              ? ThemeTokens.accent(for: model.currentFrame.classifiedEmotion)
-                              : ThemeTokens.glassFill)
-                        .overlay(
-                            Capsule(style: .continuous)
-                                .stroke(isCurrent ? Color.clear : ThemeTokens.glassStroke, lineWidth: 1)
-                        )
-                )
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(stage.pillLabel)
-        .accessibilityHint("Switches to this act immediately.")
-        .accessibilityAddTraits(isCurrent ? [.isButton, .isSelected] : .isButton)
     }
 
     // MARK: - Act content
@@ -154,6 +82,7 @@ struct RootCoordinatorView: View {
                     elapsedTime: elapsedTime,
                     reduceMotion: reduceMotion,
                     usesSynthesizedAudio: model.usesSynthesizedAudio,
+                    initiallyUnlocked: intent.opensActOneUnlocked,
                     onComplete: { advance(to: .act2TactileDecoder) }
                 )
             case .act2TactileDecoder:
@@ -164,6 +93,7 @@ struct RootCoordinatorView: View {
                     liveFrame: model.currentFrame,
                     elapsedTime: elapsedTime,
                     reduceMotion: reduceMotion,
+                    previewFrame: intent.actTwoFrame,
                     onComplete: { advance(to: .act3VocalMirror) }
                 )
             case .act3VocalMirror:
@@ -175,6 +105,7 @@ struct RootCoordinatorView: View {
                     amplitudeHistory: model.amplitudeHistory,
                     elapsedTime: elapsedTime,
                     reduceMotion: reduceMotion,
+                    openInDuet: intent.opensInDuet,
                     onRestart: { restart() }
                 )
             }
@@ -186,6 +117,11 @@ struct RootCoordinatorView: View {
     /// Loads samples and wires the engine callbacks exactly once.
     private func prepare() {
         model.prepare()
+        // CI only: open the act a screenshot was asked for. Without flags this is
+        // a no-op, so the shipping path is untouched.
+        if intent.act != .act1Blindspot, model.actStage != intent.act {
+            model.advance(to: intent.act)
+        }
     }
 
     /// Stops every engine and clears the callbacks on the way out.

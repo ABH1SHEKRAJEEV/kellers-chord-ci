@@ -17,6 +17,18 @@ enum ActStage: Int, CaseIterable, Sendable, Identifiable, Equatable {
         }
     }
 
+    /// The act's real name, used in the wordmark bar.
+    ///
+    /// v1 navigated by `I` / `II` / `III`, which told a judge nothing and read as
+    /// index numbering. The rail now names what each act is.
+    var name: String {
+        switch self {
+        case .act1Blindspot: return "The Blindspot"
+        case .act2TactileDecoder: return "Tactile Prosody"
+        case .act3VocalMirror: return "The Vocal Mirror"
+        }
+    }
+
     /// The target timecode of the act inside the 3-minute experience.
     var timecode: String {
         switch self {

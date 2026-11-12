@@ -39,6 +39,8 @@ struct Act3VocalMirrorView: View {
     var elapsedTime: Double
     /// Accessibility Reduce Motion.
     var reduceMotion: Bool
+    /// CI only (`--ci-act3-duet`): open in tabletop duet instead of the mirror.
+    var openInDuet: Bool = false
     /// Restarts the whole 3-act experience from Act I.
     var onRestart: () -> Void
 
@@ -110,6 +112,11 @@ struct Act3VocalMirrorView: View {
             capturedFrames.append(liveFrame)
             if capturedFrames.count > 600 {
                 capturedFrames.removeFirst(capturedFrames.count - 600)
+            }
+        }
+        .onAppear {
+            if openInDuet, stageMode == nil {
+                stageMode = .tabletopDuet
             }
         }
         .onDisappear { stopMirror() }

@@ -35,6 +35,12 @@ struct Act1CaptionBlindspotView: View {
     var reduceMotion: Bool
     /// `true` when the app fell back to synthesized demo voices, surfaced honestly.
     var usesSynthesizedAudio: Bool
+    /// CI only (`--ci-act1-unlocked`): open with the chord already unlocked.
+    ///
+    /// A screenshot cannot tap through the guessing game, so this jumps straight to
+    /// the authored reveal and plays the three voices. Defaulted, so the shipping
+    /// path never sees it.
+    var initiallyUnlocked: Bool = false
     /// Advances the 3-act choreography once Act I is complete.
     var onComplete: () -> Void
 
@@ -83,203 +89,158 @@ struct Act1CaptionBlindspotView: View {
         }
     }
 
-    /// The frame backing a card: live during Stage 2 playback, else silent.
-    private func frame(for index: Int) -> ProsodyFrame {
-        guard stage == .revealed, playingVoice == index else { return .silent }
+    /// Waveform envelopes read once from the three samples.
+    ///
+    /// Act I's whole argument is that three voices share one caption, so the
+    /// difference has to be *visible* before it is audible. The ribbon is drawn
+    /// from the real buffer, so a synthesized fallback shows its own shape.
+    @State private var envelopes: [[Float]] = []
+
+    var body: some View {
+        GeometryReader { geometry in
+            let isWide = geometry.size.width > 780
+
+            Group {
+                if isWide {
+                    HStack(alignment: .top, spacing: 36) {
+                        captionColumn
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        sideColumn
+                            .frame(width: 340, alignment: .leading)
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: 24) {
+                        captionColumn
+                        sideColumn
+                    }
+                }
+            }
+            .padding(.horizontal, 32)
+            .padding(.top, 24)
+            .padding(.bottom, 28)
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+        }
+        .task {
+            if envelopes.isEmpty {
+                envelopes = orderedSamples.map { AudioSampleLoader.envelope(of: $0) }
+            }
+            if initiallyUnlocked, stage == .mutedGuess {
+                unlock()
+            }
+        }
+        .onDisappear(perform: stopPlayback)
+    }
+
+    // MARK: - The caption stage (left: the one big thing)
+
+    /// The hero of the act: the shared caption, at display size, on the emotional
+    /// field of whichever voice is speaking.
+    ///
+    /// v1 repeated this identical sentence in three identical grey cards, so the
+    /// screen's dominant element was its least informative one. It now appears once,
+    /// large, and the rows beside it are three *different* voices.
+    private var captionColumn: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            Text(stage == .mutedGuess
+                 ? "Three voices. One caption. Guess the feeling."
+                 : "Same words. Now you can feel the difference.")
+                .font(ThemeTokens.Text.headline)
+                .foregroundStyle(ThemeTokens.House.paper)
+                .fixedSize(horizontal: false, vertical: true)
+
+            // The field: a flat colour block, not a glass card. The emotion IS the
+            // background, so the caption sits inside the feeling instead of on a
+            // grey rectangle.
+            ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(fieldColor)
+
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        Text(activeVoiceLabel)
+                            .font(ThemeTokens.Text.label)
+                            .foregroundStyle(ThemeTokens.House.paper.opacity(0.75))
+                        Spacer(minLength: 0)
+                        Text(stage == .mutedGuess ? "flat caption" : activeEmotion.displayName)
+                            .font(ThemeTokens.Text.label)
+                            .foregroundStyle(ThemeTokens.House.paper.opacity(0.95))
+                    }
+                    .padding(.bottom, 18)
+
+                    captionText()
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Spacer(minLength: 20)
+
+                    MetricLadder(frame: stageFrame, accent: ThemeTokens.House.paper.opacity(0.85))
+                        .frame(maxWidth: 320)
+                }
+                .padding(28)
+            }
+            .frame(minHeight: 320)
+            .animation(reduceMotion ? nil : ThemeTokens.Motion.act, value: activeEmotion)
+
+            HStack(spacing: 10) {
+                ForEach(Array(orderedSamples.enumerated()), id: \.offset) { index, sample in
+                    Circle()
+                        .fill(playingVoice == index
+                              ? ThemeTokens.accent(for: sample.profile)
+                              : ThemeTokens.textSecondary.opacity(0.3))
+                        .frame(width: 6, height: 6)
+                }
+                Text(stage == .mutedGuess
+                     ? "Every voice shows this exact sentence."
+                     : "Colour, weight and motion carry what the words cannot.")
+                    .font(ThemeTokens.Text.label)
+                    .foregroundStyle(ThemeTokens.textSecondary)
+            }
+        }
+    }
+
+    /// The colour of the caption field: neutral ink while guessing, the speaking
+    /// voice's own emotion once the chord unlocks.
+    private var fieldColor: Color {
+        guard stage == .revealed else { return ThemeTokens.Surface.level2 }
+        let first = ThemeTokens.Palette.colors(for: activeEmotion).first
+        return (first ?? ThemeTokens.Surface.level2)
+            .opacity(playingVoice == nil ? 0.20 : 0.34)
+    }
+
+    private var activeEmotion: EmotionalProfile {
+        guard stage == .revealed,
+              let index = playingVoice,
+              index < orderedSamples.count else { return .neutral }
+        return orderedSamples[index].profile
+    }
+
+    private var activeVoiceLabel: String {
+        guard let index = playingVoice, index < orderedSamples.count else {
+            return "Voice A / B / C"
+        }
+        return "Voice \(voiceLetters[index])"
+    }
+
+    private var stageFrame: ProsodyFrame {
+        guard stage == .revealed, playingVoice != nil else { return .silent }
         return liveFrame
     }
 
-    var body: some View {
-        VStack(spacing: ThemeTokens.Spacing.section) {
-            header
-            cards
-            spacerAndControls
-        }
-        .padding(.horizontal, ThemeTokens.Spacing.section)
-        .padding(.vertical, ThemeTokens.Spacing.regular)
-    }
-
-    // MARK: - Header
-
-    private var header: some View {
-        VStack(spacing: ThemeTokens.Spacing.tight) {
-            Text("THE CAPTION BLINDSPOT")
-                .font(ThemeTokens.Typography.title)
-                .foregroundStyle(ThemeTokens.textPrimary)
-                .multilineTextAlignment(.center)
-            Text(stage == .mutedGuess
-                 ? "Tap a voice, then guess what it really felt. Subtitles throw that away."
-                 : "Same words. Now you can finally feel the difference.")
-                .font(ThemeTokens.Typography.body)
-                .foregroundStyle(ThemeTokens.textSecondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if usesSynthesizedAudio {
-                // Honest labeling: the judge should know these are demo voices.
-                Label("Demo voices (add your own .m4a clips to VoiceNotes)", systemImage: "info.circle")
-                    .font(ThemeTokens.Typography.pill)
-                    .foregroundStyle(ThemeTokens.textSecondary)
-                    .padding(.horizontal, ThemeTokens.Spacing.tight)
-                    .padding(.vertical, 4)
-                    .background(Capsule(style: .continuous).fill(ThemeTokens.glassFill))
-            }
-
-            if stage == .revealed {
-                cochlearToggle
-            }
-        }
-        .padding(.top, ThemeTokens.Spacing.regular)
-        .accessibilityElement(children: .combine)
-    }
-
-    // MARK: - Phase 2 (Upgrade 1): Cochlear Loss Simulator
-
-    /// A single calm pill that switches the 280 Hz cochlear-simulation filter.
-    ///
-    /// Placed in the header so it can be toggled *while* a voice is playing, which
-    /// is the whole point: the judge hears the same clip transform from clear to
-    /// muffled without leaving the moment.
-    private var cochlearToggle: some View {
-        Button {
-            isCochlearSimulationOn.toggle()
-            applyCochlearSimulation()
-        } label: {
-            HStack(spacing: ThemeTokens.Spacing.tight) {
-                Image(systemName: isCochlearSimulationOn
-                      ? "ear.badge.waveform"
-                      : "ear")
-                    .font(.system(size: 12, weight: .semibold))
-                Text(isCochlearSimulationOn
-                     ? "Hearing Loss Simulation: ON (280 Hz)"
-                     : "Simulate Profound Hearing Loss")
-                    .font(ThemeTokens.Typography.pill)
-            }
-            .foregroundStyle(isCochlearSimulationOn
-                             ? ThemeTokens.accent(for: .anxiousTremor)
-                             : ThemeTokens.textSecondary)
-            .padding(.horizontal, ThemeTokens.Spacing.regular)
-            .padding(.vertical, 8)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(isCochlearSimulationOn
-                          ? ThemeTokens.accent(for: .anxiousTremor).opacity(0.16)
-                          : ThemeTokens.glassFill)
-                    .overlay(
-                        Capsule(style: .continuous)
-                            .stroke(isCochlearSimulationOn
-                                    ? ThemeTokens.accent(for: .anxiousTremor).opacity(0.5)
-                                    : ThemeTokens.glassStroke,
-                                    lineWidth: 1)
-                    )
-            )
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Simulate profound hearing loss")
-        .accessibilityValue(isCochlearSimulationOn ? "On" : "Off")
-        .accessibilityHint("Filters the voice at 280 hertz so you hear what profound sensorineural hearing loss sounds like.")
-        .transition(.opacity)
-    }
-
-    /// Mirrors the toggle onto the audio graph.
-    ///
-    /// `ProsodyDSPEngine` owns the two 280 Hz EQ stages between the player and the
-    /// mixer, so one assignment muffles both the bundled voice notes and the
-    /// synthesized fallback, and the analyzer (tapped after the EQ) measures the
-    /// muffled signal the judge is actually hearing.
-    private func applyCochlearSimulation() {
-        dspEngine.isCochlearSimulationEnabled = isCochlearSimulationOn
-    }
-
-    // MARK: - Cards
-
-    private var cards: some View {
-        VStack(spacing: ThemeTokens.Spacing.regular) {
-            ForEach(Array(orderedSamples.enumerated()), id: \.offset) { index, sample in
-                voiceCard(index: index, sample: sample)
-            }
-        }
-    }
-
-    /// One Voice A/B/C card. Sterile in Stage 1, fully expressive in Stage 2.
-    private func voiceCard(index: Int, sample: AudioSampleLoader.LoadedSample) -> some View {
-        let isPlaying = playingVoice == index
-        let activeFrame = frame(for: index)
-        let accent = ThemeTokens.accent(for: sample.profile)
-
-        return VStack(alignment: .leading, spacing: ThemeTokens.Spacing.tight) {
-            HStack {
-                Text("Voice \(voiceLetters[index])")
-                    .font(ThemeTokens.Typography.pill)
-                    .foregroundStyle(stage == .revealed ? accent : ThemeTokens.textSecondary)
-                    .textCase(.uppercase)
-                Spacer(minLength: 0)
-                if stage == .revealed {
-                    Text(sample.profile.displayName)
-                        .font(ThemeTokens.Typography.pill)
-                        .foregroundStyle(accent)
-                        .transition(.opacity)
-                }
-            }
-
-            // The caption itself. In Stage 1 it is frozen, uniform, and mute; in
-            // Stage 2 it is drawn glyph by glyph with live prosody.
-            captionText(index: index, activeFrame: activeFrame)
-
-            if let guess = guessedEmotion, tappedVoice == index, guessRevealed {
-                // Name what they guessed, then state the fact the whole act rests
-                // on: the caption was identical for all three. The true emotion is
-                // revealed by Stage 2 replaying the voice, not by a quiz answer,
-                // so it is deliberately withheld here.
-                Text("You guessed \(guess.displayName). All three voices showed this same flat caption.")
-                    .font(ThemeTokens.Typography.body)
-                    .foregroundStyle(ThemeTokens.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .transition(.opacity)
-            }
-        }
-        .padding(ThemeTokens.Spacing.regular)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(cardBackground(index: index, isPlaying: isPlaying, accent: accent))
-        .overlay(
-            RoundedRectangle(cornerRadius: ThemeTokens.Radius.card, style: .continuous)
-                .stroke(isPlaying ? accent.opacity(0.7) : ThemeTokens.glassStroke, lineWidth: isPlaying ? 2 : 1)
-        )
-        .contentShape(RoundedRectangle(cornerRadius: ThemeTokens.Radius.card, style: .continuous))
-        .onTapGesture { handleTap(voice: index) }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Voice \(voiceLetters[index])")
-        .accessibilityValue(stage == .revealed ? sample.profile.displayName : "Flat caption")
-        .accessibilityHint(stage == .mutedGuess
-                           ? "Double tap to hear this voice, then guess its emotion."
-                           : "Double tap to replay this emotional voice.")
-        .accessibilityAddTraits(.isButton)
-    }
-
-    /// The caption glyphs, either sterile (Stage 1) or living (Stage 2).
-    ///
-    /// `@ViewBuilder` lets the two stages return structurally different views
-    /// while the caller keeps a single `some View` call site.
+    /// The caption glyphs: sterile in Stage 1, living in Stage 2.
     @ViewBuilder
-    private func captionText(index: Int, activeFrame: ProsodyFrame) -> some View {
+    private func captionText() -> some View {
         if stage == .mutedGuess {
-            // Stage 1: dead-flat caption. Uniform weight, 70% white, zero offset.
-            // A tap flashes it brighter for a beat (the spec's sterile flash:
-            // zero audio, zero motion - only a brightness pulse).
+            // Stage 1: dead-flat caption, uniform weight, 70% white, zero motion.
             Text(caption)
-                .font(ThemeTokens.Typography.caption)
-                .foregroundStyle(flashingVoice == index
-                                 ? ThemeTokens.textPrimary
-                                 : ThemeTokens.captionBaseline)
+                .font(ThemeTokens.Text.display(56))
+                .foregroundStyle(ThemeTokens.captionBaseline)
                 .frame(maxWidth: .infinity, alignment: .leading)
         } else {
-            // Stage 2: living typography driven by the live prosody frame.
             Text(caption)
-                .font(ThemeTokens.Typography.hero)
-                .foregroundStyle(ThemeTokens.textPrimary)
+                .font(ThemeTokens.Text.display(56))
+                .foregroundStyle(ThemeTokens.House.paper)
                 .textRenderer(
                     ProsodyTextRenderer(
-                        frame: activeFrame,
+                        frame: stageFrame,
                         elapsedTime: elapsedTime,
                         reduceMotion: reduceMotion
                     )
@@ -288,17 +249,123 @@ struct Act1CaptionBlindspotView: View {
         }
     }
 
-    /// The card's glass surface, warming toward the emotion in Stage 2.
-    private func cardBackground(index: Int, isPlaying: Bool, accent: Color) -> some View {
-        RoundedRectangle(cornerRadius: ThemeTokens.Radius.card, style: .continuous)
-            .fill(ThemeTokens.glassFill)
-            .overlay(
-                RoundedRectangle(cornerRadius: ThemeTokens.Radius.card, style: .continuous)
-                    .fill(stage == .revealed
-                          ? accent.opacity(isPlaying ? 0.20 : 0.08)
-                          : Color.clear)
+    // MARK: - The side column (right: balances the caption)
+
+    private var sideColumn: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text(stage == .mutedGuess ? "Hear it, then call it." : "Replay any voice.")
+                .font(ThemeTokens.Text.subhead)
+                .foregroundStyle(ThemeTokens.textSecondary)
+
+            VStack(spacing: 10) {
+                ForEach(Array(orderedSamples.enumerated()), id: \.offset) { index, sample in
+                    voiceRow(index: index, sample: sample)
+                }
+            }
+
+            spacerAndControls
+
+            sideFooter
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    // MARK: - Footer (hearing-loss simulation + honesty note)
+
+    /// The cochlear-implant simulation toggle and the note about the demo voices.
+    ///
+    /// Both lived in v1, and both are load-bearing: the toggle is Upgrade 1 of the
+    /// accessibility story, and the note is what stops a judge thinking the three
+    /// voices are the ones in `VoiceNotes/`.
+    private var sideFooter: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if stage == .revealed {
+                Toggle(isOn: $isCochlearSimulationOn) {
+                    Text("Simulate profound hearing loss")
+                        .font(ThemeTokens.Text.label)
+                        .foregroundStyle(ThemeTokens.textSecondary)
+                }
+                .toggleStyle(.switch)
+                .tint(ThemeTokens.House.ember)
+                .onChange(of: isCochlearSimulationOn) { _, _ in
+                    applyCochlearSimulation()
+                }
+                .accessibilityLabel("Simulate profound hearing loss")
+                .accessibilityValue(isCochlearSimulationOn ? "On" : "Off")
+                .accessibilityHint("Narrows the audio to the 280 hertz cochlear implant band.")
+            }
+
+            if usesSynthesizedAudio {
+                Text("Demo voices are synthesized. Add your own .m4a clips to VoiceNotes to hear real prosody.")
+                    .font(ThemeTokens.Text.label)
+                    .foregroundStyle(ThemeTokens.textSecondary.opacity(0.75))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// One voice: a real waveform, its letter, and its emotion once revealed.
+    ///
+    /// Not a card. Three identical bordered rectangles were the clearest generated
+    /// -layout tell on the v1 screen. These are rows in one column, separated by a
+    /// step in tone, each identified by its own waveform.
+    private func voiceRow(index: Int, sample: AudioSampleLoader.LoadedSample) -> some View {
+        let isPlaying = playingVoice == index
+        let isTapped = tappedVoice == index
+        let accent = ThemeTokens.accent(for: sample.profile)
+        let envelope = index < envelopes.count ? envelopes[index] : []
+
+        return Button {
+            handleTap(voice: index)
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .center, spacing: 10) {
+                    Text("Voice \(voiceLetters[index])")
+                        .font(ThemeTokens.Text.label)
+                        .foregroundStyle(isPlaying || isTapped
+                                         ? ThemeTokens.House.paper
+                                         : ThemeTokens.textSecondary)
+                    Spacer(minLength: 0)
+                    if stage == .revealed {
+                        Text(sample.profile.displayName)
+                            .font(ThemeTokens.Text.label)
+                            .foregroundStyle(accent)
+                    } else if isTapped {
+                        Text("tapped")
+                            .font(ThemeTokens.Text.label)
+                            .foregroundStyle(ThemeTokens.textSecondary)
+                    }
+                }
+
+                WaveRibbon(
+                    envelope: envelope,
+                    accent: stage == .revealed ? accent : ThemeTokens.textSecondary,
+                    progress: nil
+                )
+                .frame(height: 26)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(isTapped || isPlaying
+                          ? ThemeTokens.Surface.level3
+                          : ThemeTokens.Surface.level1)
             )
-            .animation(reduceMotion ? nil : ThemeTokens.Motion.act, value: isPlaying)
+            .overlay(alignment: .leading) {
+                Rectangle()
+                    .fill(isTapped || isPlaying ? accent : Color.clear)
+                    .frame(width: 2)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Voice \(voiceLetters[index])")
+        .accessibilityValue(stage == .revealed ? sample.profile.displayName : "Flat caption")
+        .accessibilityHint(stage == .mutedGuess
+                           ? "Double tap to hear this voice, then guess its emotion."
+                           : "Double tap to replay this emotional voice.")
     }
 
     // MARK: - Controls
@@ -315,29 +382,29 @@ struct Act1CaptionBlindspotView: View {
 
     /// Stage 1: the emotion guesses, then the unlock button once guessed.
     private var mutedControls: some View {
-        VStack(spacing: ThemeTokens.Spacing.regular) {
-            // §8 Act I layout: three emotion tags sit below the cards, always
-            // visible so the judge knows the vocabulary before assigning it.
-            VStack(spacing: ThemeTokens.Spacing.tight) {
+        VStack(alignment: .leading, spacing: 14) {
+            // The vocabulary is always visible, so a judge knows the three options
+            // before assigning one. Full-width rows: at 340pt the three names on one
+            // line overflowed, which is what collapsed the v1 chip row.
+            VStack(alignment: .leading, spacing: 8) {
                 Text(tappedVoice == nil
                      ? "Assign each voice an emotion."
                      : "What did Voice \(voiceLetters[tappedVoice ?? 0]) really feel?")
-                    .font(ThemeTokens.Typography.body)
+                    .font(ThemeTokens.Text.body)
                     .foregroundStyle(ThemeTokens.textSecondary)
-                HStack(spacing: ThemeTokens.Spacing.tight) {
-                    ForEach(EmotionalProfile.actOneChoices) { emotion in
-                        emotionChip(emotion: emotion)
-                            .disabled(tappedVoice == nil)
-                            .opacity(tappedVoice == nil ? 0.45 : 1)
-                    }
+                    .fixedSize(horizontal: false, vertical: true)
+
+                ForEach(EmotionalProfile.actOneChoices) { emotion in
+                    emotionChip(emotion: emotion)
+                        .disabled(tappedVoice == nil)
+                        .opacity(tappedVoice == nil ? 0.5 : 1)
                 }
             }
 
             if guessRevealed {
-                Text("You cannot tell. Warm relief, quiet anxiety, and biting sarcasm all render as the exact same flat caption - standard subtitles strip away about 70% of human intent.")
-                    .font(ThemeTokens.Typography.body)
+                Text("All three render as this exact caption. Standard subtitles erase about 70% of human intent.")
+                    .font(ThemeTokens.Text.label)
                     .foregroundStyle(ThemeTokens.textSecondary)
-                    .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
                     .transition(.opacity)
             }
@@ -350,74 +417,94 @@ struct Act1CaptionBlindspotView: View {
         .animation(reduceMotion ? nil : ThemeTokens.Motion.act, value: guessRevealed)
     }
 
-    /// One emotion guess chip.
+    /// One emotion guess chip: a full-width row that names its own colour.
     private func emotionChip(emotion: EmotionalProfile) -> some View {
         let accent = ThemeTokens.accent(for: emotion)
         return Button {
             guess(emotion)
         } label: {
-            Text(emotion.displayName)
-                .font(ThemeTokens.Typography.pill)
-                .foregroundStyle(accent)
-                .padding(.horizontal, ThemeTokens.Spacing.regular)
-                .padding(.vertical, 10)
-                .background(
-                    Capsule(style: .continuous)
-                        .fill(accent.opacity(0.14))
-                        .overlay(Capsule(style: .continuous).stroke(accent.opacity(0.4), lineWidth: 1))
-                )
+            HStack(spacing: 10) {
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .fill(accent)
+                    .frame(width: 14, height: 14)
+                Text(emotion.displayName)
+                    .font(ThemeTokens.Text.body)
+                    .foregroundStyle(ThemeTokens.House.paper)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(accent.opacity(0.16))
+            )
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Guess \(emotion.displayName)")
         .accessibilityHint("Assign this emotion to the voice you tapped.")
     }
 
-    /// The single glowing call to action that opens Stage 2.
+    /// The one action that opens Stage 2.
+    ///
+    /// Flat ember, radius 12, no glow: the v1 pill's 18pt shadow was the only
+    /// "premium" gesture on the screen, which made everything around it look
+    /// unfinished by comparison.
     private var unlockButton: some View {
         Button {
             unlock()
         } label: {
-            Text("Unlock Keller's Chord (Cross-Modal Prosody)")
-                .font(ThemeTokens.Typography.body)
-                .fontWeight(.semibold)
-                .foregroundStyle(ThemeTokens.obsidian)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, ThemeTokens.Spacing.section)
-                .padding(.vertical, ThemeTokens.Spacing.regular)
-                .frame(maxWidth: .infinity)
-                .background(
-                    Capsule(style: .continuous)
-                        .fill(ThemeTokens.accent(for: .warmRelief))
-                )
-                .shadow(color: ThemeTokens.accent(for: .warmRelief).opacity(0.55), radius: 18)
+            HStack(spacing: 8) {
+                Text("Unlock Keller's Chord")
+                    .font(ThemeTokens.Text.body)
+                    .fontWeight(.semibold)
+                Spacer(minLength: 0)
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 15, weight: .semibold))
+            }
+            .foregroundStyle(ThemeTokens.obsidian)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .frame(maxWidth: .infinity)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(ThemeTokens.House.ember)
+            )
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Unlock Keller's Chord, cross-modal prosody")
         .accessibilityHint("Replays all three voices with living typography and tactile feedback.")
-        .transition(.scale.combined(with: .opacity))
+        .transition(.opacity)
     }
 
-    /// Stage 2: the continue button, unlocking after the reveal.
+    /// Stage 2: the continue button, revealed once the chord has played.
     private var revealedControls: some View {
-        VStack(spacing: ThemeTokens.Spacing.regular) {
-            Text("Every voice just played its true emotion through type and touch. That is the 70% flat captions erase.")
-                .font(ThemeTokens.Typography.body)
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Every voice just played its real emotion through type and touch.")
+                .font(ThemeTokens.Text.label)
                 .foregroundStyle(ThemeTokens.textSecondary)
-                .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
 
             Button {
                 stopPlayback()
                 onComplete()
             } label: {
-                Text("Continue to Tactile Explorer")
-                    .font(ThemeTokens.Typography.body)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(ThemeTokens.obsidian)
-                    .padding(.horizontal, ThemeTokens.Spacing.section)
-                    .padding(.vertical, ThemeTokens.Spacing.regular)
-                    .frame(maxWidth: .infinity)
-                    .background(Capsule(style: .continuous).fill(ThemeTokens.textPrimary))
+                HStack(spacing: 8) {
+                    Text("Tactile Explorer")
+                        .font(ThemeTokens.Text.body)
+                        .fontWeight(.semibold)
+                    Spacer(minLength: 0)
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 15, weight: .semibold))
+                }
+                .foregroundStyle(ThemeTokens.House.paper)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
+                .frame(maxWidth: .infinity)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(ThemeTokens.Surface.level3)
+                )
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Continue to tactile explorer")

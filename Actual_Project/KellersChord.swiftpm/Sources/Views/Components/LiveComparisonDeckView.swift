@@ -183,10 +183,10 @@ struct LiveComparisonDeckView: View {
     private func metricChip(label: String, value: String) -> some View {
         HStack(spacing: 3) {
             Text(label)
-                .font(.system(size: 9, weight: .medium, design: .rounded))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(ThemeTokens.textSecondary)
             Text(value)
-                .font(.system(size: 9, weight: .semibold, design: .rounded))
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(ThemeTokens.textPrimary)
         }
         .padding(.horizontal, 6)

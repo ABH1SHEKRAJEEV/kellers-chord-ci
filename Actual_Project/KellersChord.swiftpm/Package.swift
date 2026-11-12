@@ -45,15 +45,17 @@ let package = Package(
                 .process("Resources")
             ]
         ),
-        // Frame-level DSP invariants, run by `xcodebuild test` on the macOS CI
-        // runner. `Tests/DSPHarness/` is deliberately NOT a target: it is a
-        // standalone `swiftc` program the workflow compiles directly against the
-        // engine sources, so the heavy signal tests cannot fail for packaging
-        // reasons.
-        .testTarget(
-            name: "KellersChordTests",
-            dependencies: ["AppModule"],
-            path: "Tests/AppModuleTests"
-        )
+        // NOTE: there is deliberately NO `.testTarget` here.
+        //
+        // A `.testTarget` that depends on this `iOSApplication` product cannot be
+        // hosted: run 5's `xcodebuild test` died before running an assertion with
+        //   lstat(.../KellersChord_AppModule.bundle): No such file or directory
+        //   error: 'kellerschord.swiftpm': Invalid manifest
+        // A Playgrounds App is not a library, so it has no module bundle to link a
+        // test host against. The same declarations would also stop Swift Playgrounds
+        // opening the bundle (SSC rule), so both frame-level suites now build as
+        // standalone `swiftc` programs the workflow runs directly:
+        //   Tests/DSPHarness/main.swift    - signal math (RMS, F0, sibilance)
+        //   Tests/ModelHarness/main.swift  - frame invariants (bands, inflection)
     ]
 )

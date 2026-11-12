@@ -27,6 +27,12 @@ struct Act2TactileProsodyView: View {
     var elapsedTime: Double
     /// Accessibility Reduce Motion.
     var reduceMotion: Bool
+    /// CI only (`--ci-act2-chladni`): the frame the pad opens on.
+    ///
+    /// The Chladni plate is driven by `sculptedFrame`, which is silent until a
+    /// finger touches it. CI has no finger, so this seeds one designed state to
+    /// photograph. Defaulted to nil, so the shipping path opens silent.
+    var previewFrame: ProsodyFrame? = nil
     /// Advances the 3-act choreography once Act II is complete.
     var onComplete: () -> Void
 
@@ -89,6 +95,13 @@ struct Act2TactileProsodyView: View {
         }
         .padding(.horizontal, ThemeTokens.Spacing.section)
         .padding(.vertical, ThemeTokens.Spacing.regular)
+        .onAppear {
+            // CI only: seed the pad with a designed emotion so the Chladni plate can
+            // be photographed. A finger scrubbing wins immediately afterwards.
+            if let previewFrame, !sculptedFrame.isVoiced {
+                sculptedFrame = previewFrame
+            }
+        }
         .onDisappear { stopPlayback() }
     }
 

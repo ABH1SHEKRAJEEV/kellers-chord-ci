@@ -1892,3 +1892,143 @@ fails, so this is a real regression test, not a comment.
 * Simulator screenshots. `preview/NOTES.txt` shows the step had already chosen the
   iPad Pro 13-inch (M5) and the `.app` path, but no `.app` existed to install. No
   human has seen KellersChord yet.
+
+---
+
+## APPENDIX G — Run 5: the first green build, the test-host dead end, and the design reset
+
+Run 5 (`kellerschord-ci-5`) was the first run where **every hard gate passed**:
+iOS typecheck, macOS typecheck, DSP harness (43/43), `xcodebuild build` for iOS
+*and* macOS, icon render, `.asset("AppIcon")` probe, and — for the first time —
+a real simulator install, launch and screenshot. One soft stage failed
+(`xcodebuild test`), and the screenshots showed a design problem that no gate
+could catch.
+
+### G.1 What run 5 proved
+
+| stage | result | evidence |
+|---|---|---|
+| Text.Layout idiom probe | PASS on candidate 1 | `04-textlayout-probe.log` |
+| iOS typecheck | PASS | `10-typecheck-ios.log` |
+| macOS typecheck | PASS | `11-typecheck-macos.log` |
+| DSP harness | 43 checks, 0 failed | `21-dsp-tests.log` |
+| `xcodebuild build` iOS | PASS | `30-build-ios.log` |
+| `xcodebuild build` macOS | PASS | `31-build-macos.log` |
+| icon render + `.asset` probe | PASS | `50-icon-probe.log` |
+| simulator preview | PASS (app installed + launched) | `preview/NOTES.txt` |
+| `xcodebuild test` | **FAIL** | `40-xcodebuild-test.log` |
+
+So the compiler questions from appendices D–F are all closed. The app builds,
+installs and runs on an iPad simulator.
+
+### G.2 Why `xcodebuild test` failed (and why it is not coming back)
+
+Attempt 1 died before running a single assertion:
+
+```
+error: lstat(.../ci-derived/Build/Products/Debug-iphonesimulator/KellersChord_AppModule.bundle):
+       No such file or directory (2) (in target 'KellersChordTests' from project 'KellersChord')
+Testing failed: Testing cancelled because the build failed.
+** TEST FAILED **
+```
+
+Attempt 2 (`-scheme KellersChordTests`) does not exist, and attempt 3
+(`swift test`) cannot see `AppleProductTypes` at all.
+
+Root cause: `Package.swift` declared
+
+```swift
+.testTarget(name: "KellersChordTests", dependencies: ["AppModule"], path: "Tests/AppModuleTests")
+```
+
+but `AppModule` is the target of an `.iOSApplication` **product**. A Playgrounds
+App is not a library: it has no `AppModule.bundle` for a test host to link
+against, so the test bundle can never resolve. This is a packaging fact, not a
+maths failure — and the same declaration is exactly the kind of thing that stops
+Swift Playgrounds opening a `.swiftpm` bundle (the SSC rule).
+
+Decision: **the `.testTarget` is gone.** Both suites are now standalone `swiftc`
+programs, which is the pattern that has worked since run 2:
+
+* `Tests/DSPHarness/main.swift` — signal maths (43 checks), hard gate 3.
+* `Tests/ModelHarness/main.swift` — frame invariants, hard gate 4.
+
+`ModelHarness` is the old XCTest file with its assertion bodies unchanged; the
+XCTest spellings (`XCTAssertEqual`, `XCTAssertLessThan`, `XCTUnwrap`, …) are
+provided by ~120 lines of shims at the top, so a diff against the old file is
+readable. It runs 13 named checks / 60+ assertions, including two new ones:
+
+* `testLaunchIntentFlags` — every CI flag resolves to a real act, the no-flag
+  default is Act I, and each `ProsodyFrame.preview(_:)` frame classifies as the
+  emotion it claims.
+* `testProgressAnchorsAreMonotonic` now also asserts every act has a real name
+  (the wordmark rail depends on it).
+
+### G.3 The design reset (the part no gate could catch)
+
+The run-5 screenshots were the first time anyone saw the app, and they were
+bad: a near-black screen, huge empty vertical gaps, three identical grey cards
+repeating one sentence, and a single orange pill. The cause was structural, not
+cosmetic:
+
+1. **The idle field was black.** `EmotionalMeshBackground` multiplied its colour
+   mix by `0.04` when no audio was streaming, so the app's entire visual identity
+   vanished whenever nobody was speaking — which is every screenshot.
+2. **The type scale had no big size.** Everything sat between 11 and 24 pt, so
+   nothing could be the one thing the eye lands on.
+3. **The layout was a centred column of identical cards.** Three copies of the
+   same caption in three identical bordered rectangles is the clearest
+   "generated layout" tell there is, and it made the least informative element
+   the largest.
+4. **`.rounded` everywhere.** The rounded system face is iOS's default friendly
+   voice; it flattened all three acts into the same generic product.
+
+What changed:
+
+* `ThemeTokens`: new `Text` scale (display 56–64, headline 30, subhead 19, body
+  17, label 14, metric 13), `Surface.level0…3` tone steps (separation by tone,
+  not by 1 pt strokes), and a `House` palette (ember `#F59E0B` on ink) so the app
+  has an identity before any audio exists. `Typography` keeps its old names but
+  loses `.rounded` and gains real size contrast, which lifts Acts II and III too.
+* `Palette.neutral` is now ink-blue → plum → obsidian instead of three
+  near-blacks, and the mesh has a **floor** (`base = 0.62`) so silence still
+  renders a designed field. Audio only adds to it.
+* New `Sources/DesignSystem/StageChrome.swift`:
+  * `WordmarkBar` — wordmark, the three acts by **name** ("The Blindspot",
+    "Tactile Prosody", "The Vocal Mirror"), live emotion + timecode, and a filled
+    progress rule. Replaces the glass pill with I / II / III.
+  * `MetricLadder` — pitch / loudness / air as real bars with real numbers.
+  * `WaveRibbon` — a waveform envelope read off the sample's own buffer
+    (`AudioSampleLoader.envelope(of:)`), so three voices that share one caption
+    are visibly different before they are audible.
+* `Act1CaptionBlindspotView` recomposed as a two-column poster: the caption once,
+  at 56 pt, inside a flat colour field that takes the speaking voice's emotion;
+  the three voices as rows with their own waveforms; the guess chips, CTA and
+  cochlear toggle in a 340 pt right column. The caption is no longer repeated
+  three times, and the CTA is flat ember with no glow.
+* `ActStage.name` added for the rail.
+
+### G.4 CI visual tour (a Windows author cannot tap the simulator)
+
+`Sources/Models/LaunchIntent.swift` reads `ProcessInfo.processInfo.arguments`:
+
+| flag | state |
+|---|---|
+| `--ci-act1-unlocked` | Act I, chord unlocked, living typography running |
+| `--ci-act2-chladni` | Act II, pad seeded with a warm-relief frame |
+| `--ci-act3-mirror` | Act III, live prosody stream + ghost rail + braille |
+| `--ci-act3-duet` | Act III, tabletop face-to-face duet |
+
+No flag = the judge's path, unchanged. The preview step now relaunches once per
+flag and writes `preview/01_act1_guess.png` … `05_act3_duet.png` plus
+`act_tour.mov`, and prints each PNG's size and md5 so a degenerate capture (run 5
+produced two byte-identical PNGs) is visible in `NOTES.txt` instead of silent.
+
+### G.5 Still unverified
+
+* Whether the new Act I composition actually looks good — no human has seen it.
+  The next run's five PNGs are the first real look.
+* `--ci-act2-chladni` seeds `sculptedFrame`; whether the Chladni plate renders
+  that frame before the screenshot is taken is unproven.
+* Act II and Act III still use their v1 single-column compositions. They inherit
+  the new type scale, palette and chrome, but they have not been recomposed.

@@ -371,7 +371,7 @@ private struct ZonePad: View {
                     .font(ThemeTokens.Typography.pill)
                     .foregroundStyle(ThemeTokens.textPrimary)
                 Text(zone.anatomical)
-                    .font(.system(size: 9, weight: .medium, design: .rounded))
+                    .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(ThemeTokens.textSecondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)

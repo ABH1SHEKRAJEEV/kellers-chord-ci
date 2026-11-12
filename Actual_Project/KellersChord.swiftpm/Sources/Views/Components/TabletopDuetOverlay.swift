@@ -270,7 +270,7 @@ struct TabletopDuetOverlay: View {
         HStack(spacing: ThemeTokens.Spacing.tight) {
             ForEach(Self.replyCards, id: \.self) { reply in
                 Text(reply)
-                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                    .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(ThemeTokens.textPrimary)
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
