@@ -596,6 +596,15 @@ struct Act1CaptionBlindspotView: View {
         dspEngine.play(orderedSamples[index])
     }
 
+    /// Mirrors the toggle into the audio graph.
+    ///
+    /// The two 280 Hz low-pass stages live between the player and the mixer, so the
+    /// judge hears the muffled signal the analyzer also measures. The flag is set
+    /// before `play` schedules audio, so a replay never leaks an un-filtered buffer.
+    private func applyCochlearSimulation() {
+        dspEngine.isCochlearSimulationEnabled = isCochlearSimulationOn
+    }
+
     /// Tears down playback when leaving Act I.
     private func stopPlayback() {
         sequenceTask?.cancel()
